@@ -1,0 +1,279 @@
+use eframe::egui::{self, Color32, RichText};
+mod file_tools;
+mod library_view;
+mod matching;
+mod theme;
+use media_shelf::storage::{LibraryDb, database_path};
+use media_shelf::{Category, ScanReport, Source, Video};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
+
+pub fn run() -> eframe::Result {
+    eframe::run_native(
+        "Media Shelf",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1380.0, 880.0])
+                .with_min_inner_size([1080.0, 720.0]),
+            ..Default::default()
+        },
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            theme::install(&cc.egui_ctx);
+            Ok(Box::new(App::new()))
+        }),
+    )
+}
+
+enum Event {
+    Progress(usize),
+    Done(ScanReport, Result<Vec<Video>, String>),
+}
+
+struct App {
+    sources: Vec<Source>,
+    category: Category,
+    folder_input: String,
+    filter: String,
+    videos: Vec<Video>,
+    warnings: Vec<String>,
+    error: Option<String>,
+    status: String,
+    receiver: Option<mpsc::Receiver<Event>>,
+    cancel: Arc<AtomicBool>,
+    database: Option<LibraryDb>,
+    selected: Option<PathBuf>,
+    tmdb_ui: matching::TmdbUi,
+    file_tools: file_tools::FileTools,
+    selection: std::collections::HashSet<PathBuf>,
+    detail_tab: usize,
+    sources_open: bool,
+    filter_mode: usize,
+    sort: usize,
+}
+
+impl App {
+    fn new() -> Self {
+        let loaded = (|| -> media_shelf::storage::DbResult<_> {
+            let path = database_path();
+            let mut db = LibraryDb::open(&path)?;
+            db.migrate_folders(&path.with_file_name("folders.json"))?;
+            let sources = db.sources()?;
+            db.import_local_nfos()?;
+            let videos = db.videos()?;
+            Ok((db, sources, videos))
+        })();
+        let (database, sources, videos, error) = match loaded {
+            Ok((db, sources, videos)) => (Some(db), sources, videos, None),
+            Err(e) => (
+                None,
+                vec![],
+                vec![],
+                Some(format!(
+                    "Could not open library database: {e}. Restart after fixing the problem. Database: {}",
+                    database_path().display()
+                )),
+            ),
+        };
+        let status = if sources.is_empty() {
+            "Add your first folder to get started".into()
+        } else {
+            format!(
+                "Loaded {} saved files · Rescan folders to check for changes",
+                videos.len()
+            )
+        };
+        let selected = videos.first().map(|v| v.path.clone());
+        let category = videos
+            .first()
+            .map(|v| v.category)
+            .unwrap_or(Category::Movies);
+        let selection = selected.iter().cloned().collect();
+        Self {
+            sources,
+            category,
+            folder_input: String::new(),
+            filter: String::new(),
+            videos,
+            warnings: vec![],
+            error,
+            status,
+            receiver: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+            database,
+            selected,
+            tmdb_ui: matching::TmdbUi::new(),
+            file_tools: file_tools::FileTools::new(),
+            selection,
+            detail_tab: 0,
+            sources_open: false,
+            filter_mode: 0,
+            sort: 0,
+        }
+    }
+
+    fn save_sources(&mut self, sources: Vec<Source>) -> bool {
+        let result = self
+            .database
+            .as_mut()
+            .ok_or_else(|| "Database unavailable".to_string())
+            .and_then(|db| db.set_sources(&sources).map_err(|e| e.to_string()));
+        if let Err(e) = result {
+            self.error = Some(format!("Could not save folders: {e}"));
+            return false;
+        }
+        self.sources = sources;
+        if let Some(db) = &self.database {
+            match db.videos() {
+                Ok(videos) => self.videos = videos,
+                Err(e) => self.error = Some(format!("Could not reload cached files: {e}")),
+            }
+        }
+        true
+    }
+
+    fn add_folder(&mut self, path: PathBuf) {
+        if !path.is_dir() {
+            self.error = Some(format!("Choose an existing folder: {}", path.display()));
+            return;
+        }
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                self.error = Some(format!("Could not open folder: {e}"));
+                return;
+            }
+        };
+        let source = Source {
+            category: self.category,
+            path,
+        };
+        if self.sources.contains(&source) {
+            self.error = Some("That folder is already in this category.".into());
+            return;
+        }
+        let mut sources = self.sources.clone();
+        sources.push(source);
+        if !self.save_sources(sources) {
+            return;
+        }
+        self.folder_input.clear();
+        self.error = None;
+        self.start_scan();
+    }
+
+    fn start_scan(&mut self) {
+        if self.receiver.is_some() || self.database.is_none() {
+            return;
+        }
+        self.warnings.clear();
+        self.selected = None;
+        self.selection.clear();
+        let sources = self.sources.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel = cancel.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.status = "Scanning folders…".into();
+        std::thread::spawn(move || {
+            let mut report = media_shelf::scan(&sources, &cancel, |n| {
+                let _ = sender.send(Event::Progress(n));
+            });
+            let saved = (|| -> media_shelf::storage::DbResult<_> {
+                let mut db = LibraryDb::open(&database_path())?;
+                db.apply_scan(&sources, &report)?;
+                if !report.cancelled {
+                    report.warnings.extend(db.import_local_nfos()?);
+                }
+                db.videos()
+            })()
+            .map_err(|e| e.to_string());
+            let _ = sender.send(Event::Done(report, saved));
+        });
+    }
+
+    fn poll(&mut self) {
+        let mut done = false;
+        if let Some(receiver) = &self.receiver {
+            loop {
+                match receiver.try_recv() {
+                    Ok(Event::Progress(n)) => {
+                        self.status = format!("Scanning folders… {n} video files found")
+                    }
+                    Ok(Event::Done(report, saved)) => {
+                        self.status = if report.cancelled {
+                            "Scan cancelled · Saved library kept".into()
+                        } else if !report.warnings.is_empty() {
+                            format!(
+                                "Found {} files · {} warnings · Cached files retained",
+                                report.videos.len(),
+                                report.warnings.len()
+                            )
+                        } else {
+                            format!(
+                                "Scan complete · {} video files · {} warnings",
+                                report.videos.len(),
+                                report.warnings.len()
+                            )
+                        };
+                        match saved {
+                            Ok(videos) => self.videos = videos,
+                            Err(e) => {
+                                self.status =
+                                    "Scan could not be saved · Showing previous library".into();
+                                self.error = Some(format!("Database update failed: {e}"));
+                            }
+                        }
+                        self.warnings = report.warnings;
+                        done = true;
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.error =
+                            Some("The scanner stopped unexpectedly. Try scanning again.".into());
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if done {
+            self.receiver = None;
+        }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+fn display_path(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{unc}")
+    } else {
+        path.strip_prefix("\\\\?\\").unwrap_or(&path).to_string()
+    }
+}
+
+fn size(bytes: u64) -> String {
+    if bytes >= 1 << 30 {
+        format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64)
+    } else if bytes >= 1 << 20 {
+        format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64)
+    } else if bytes >= 1 << 10 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
