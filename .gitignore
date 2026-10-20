@@ -5,3 +5,7 @@
 tmdb-token.dat
 .env
 .env.*
+
+# Local development notes
+/TMM-FLOW.md
+/VERIFICATION.md
