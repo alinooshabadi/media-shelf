@@ -12,7 +12,8 @@ version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$project_dir/Cargo.toml" | hea
 test -n "$version"
 app="$project_dir/target/macos/Media Shelf.app"
 mkdir -p "$app/Contents/MacOS"
-cp "$project_dir/target/release/media-shelf" "$app/Contents/MacOS/media-shelf"
+cp "$project_dir/target/release/media-shelf" "$app/Contents/MacOS/media-shelf.new"
+mv -f "$app/Contents/MacOS/media-shelf.new" "$app/Contents/MacOS/media-shelf"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

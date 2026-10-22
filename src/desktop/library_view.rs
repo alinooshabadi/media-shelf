@@ -42,9 +42,14 @@ mod tests {
     use super::*;
     #[test]
     fn light_library_and_detail_tabs_render_at_supported_sizes() {
-        for width in [1080.0, 1380.0] {
+        for (width, category) in [
+            (1080.0, Category::Movies),
+            (1380.0, Category::Movies),
+            (1080.0, Category::Series),
+            (1380.0, Category::Series),
+        ] {
             let identity = media_shelf::tmdb::TmdbMatch {
-                category: Category::Movies,
+                category,
                 id: 42,
                 title: "A Movie with a Longer Title".into(),
                 original_title: "Original title".into(),
@@ -55,9 +60,15 @@ mod tests {
             metadata.year = Some(2001);
             metadata.studios = vec!["A long production company name ".repeat(15)];
             let video = Video {
+                is_folder: category == Category::Series,
                 artwork: Default::default(),
-                category: Category::Movies,
-                path: "C:/fixtures/movie.mp4".into(),
+                category,
+                path: if category == Category::Movies {
+                    "C:/fixtures/movie.mp4"
+                } else {
+                    "C:/fixtures/Show (2001)"
+                }
+                .into(),
                 relative_path: "movie.mp4".into(),
                 bytes: 1024,
                 tmdb: Some(identity),
@@ -65,7 +76,7 @@ mod tests {
             };
             let mut app = App {
                 sources: vec![],
-                category: Category::Movies,
+                category,
                 folder_input: String::new(),
                 filter: String::new(),
                 videos: vec![video.clone()],
@@ -124,7 +135,7 @@ mod tests {
                     }
                 }
             }
-            assert!(app.videos[0].path.ends_with("movie.mp4"));
+            assert_eq!(app.videos[0].is_folder, category == Category::Series);
         }
     }
 }
@@ -256,6 +267,13 @@ impl App {
             .collect()
     }
     fn select(&mut self, path: PathBuf, additive: bool) {
+        if let Some(video) = self
+            .videos
+            .iter_mut()
+            .find(|v| v.category == Category::Series && v.path == path)
+        {
+            media_shelf::artwork::attach_one(video, &self.sources);
+        }
         if !additive {
             self.selection.clear();
         }
@@ -585,6 +603,21 @@ impl App {
                                 .to_string_lossy()
                                 .into_owned()
                         });
+                    if first.is_folder {
+                        let response =
+                            ui.selectable_label(self.selected.as_ref() == Some(&first.path), &name);
+                        let action = item_menu(&response, locked);
+                        if response.secondary_clicked() || action.is_some() {
+                            context = Some((vec![first.path.clone()], action));
+                        }
+                        if response.clicked() {
+                            click = Some((
+                                first.path.clone(),
+                                ui.input(|i| i.modifiers.ctrl || i.modifiers.command),
+                            ));
+                        }
+                        continue;
+                    }
                     let header =
                         egui::CollapsingHeader::new(format!("{name}  ({} files)", items.len()))
                             .id_salt(&folder)
@@ -726,6 +759,13 @@ impl App {
                     2 => {
                         ui.heading("Media files");
                         ui.add_space(12.0);
+                        if video.is_folder {
+                            ui.weak("Show folder indexed. Seasons and episodes are scanned only when renaming this show.");
+                            if let Some(error) = folder_link(ui, &display_path(&video.path), &video.path) {
+                                self.error = Some(error);
+                            }
+                            return;
+                        }
                         ui.label(episode_label(&video));
                         ui.horizontal(|ui| {
                             theme::badge(ui, &size(video.bytes));
@@ -740,7 +780,7 @@ impl App {
                             );
                         });
                         ui.add_space(12.0);
-                        if let Some(folder) = video.path.parent() {
+                        if let Some(folder) = if video.is_folder { Some(video.path.as_path()) } else { video.path.parent() } {
                             if let Some(error) = folder_link(ui, &display_path(&video.path), folder)
                             {
                                 self.error = Some(error);
@@ -978,7 +1018,7 @@ impl App {
                             }
                         }
                         ui.add_space(20.0);
-                        if let Some(folder) = video.path.parent() {
+                        if let Some(folder) = if video.is_folder { Some(video.path.as_path()) } else { video.path.parent() } {
                             if let Some(error) = folder_link(ui, &display_path(&video.path), folder)
                             {
                                 self.error = Some(error);

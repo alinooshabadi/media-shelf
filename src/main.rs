@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             category,
             path: args[2].clone().into(),
         };
-        let report = media_shelf::scan(
+        let report = media_shelf::index(
             &[source],
             &std::sync::atomic::AtomicBool::new(false),
             |_| {},

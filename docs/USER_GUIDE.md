@@ -11,7 +11,7 @@ On macOS, open **Media Shelf.app** instead. In the app:
 
 1. Choose **Movies** or **TV shows**.
 2. Open **Data sources** and browse for a folder, or paste a folder path and click **Add**.
-3. The scan starts automatically. Add more folders if needed.
+3. The scan starts automatically. Movies are recursive; TV sources index only immediate show folders. Add more folders if needed.
 4. Filter by title/path. Select rows to view details; Ctrl-click (Command-click on Mac) selects multiple movies.
 5. Right-click a movie, TV show or episode for **Search & scrape** and **Rename**. Right-clicking a selected item keeps the multi-selection. Rename applies the default format immediately; selected items need a saved match or local NFO with title/year.
 6. Click **Update sources** after adding files to your media folders.
@@ -68,7 +68,7 @@ with case-insensitive filenames. Poster names: `<video-stem>-poster`,
 `<video-stem>.poster`, `poster`, `folder`. Fanart names: `<video-stem>-fanart`,
 `<video-stem>.fanart`, `fanart`, `backdrop`. Filename-specific artwork takes
 priority within a directory; local files take priority over downloaded artwork.
-TV episodes also look in the inferred show folder. The overview, Artwork tab and
+TV show artwork is loaded when selecting a show, so indexing does not enumerate show contents. Previously indexed episodes also look in the inferred show folder. The overview, Artwork tab and
 No artwork filter recognize these local files. Artwork is read in place, without
 creating a provider match or changing the files. Metadata still requires scraping;
 movie NFO import is supported; other artwork categories are not implemented yet.
@@ -116,7 +116,15 @@ files are retained. Undo restores the original file paths, including after resta
 A movie directly in a source root gets a new subfolder. A movie already in a folder
 gets the new folder beside its current folder, avoiding repeated nesting.
 **Rename & cleanup → Rename all matched files…** applies the defaults to matched
-files in the current category. Series retain their folders and episode-name format.
+files in the current category. Indexed series use `Show (Year)/Season N/Show - S01E01 - Episode title.ext`.
+Only Rename scans the selected show's episodes. Matching local NFO titles and
+existing standard filenames take priority; missing episode titles are fetched
+from TMDB in English, once per season. Save your token in Settings first.
+If a needed title cannot be loaded, no files move. Subtitles (including language
+suffixes), NFOs and thumbnails follow the episode names; other files are retained.
+Unrecognized and multi-episode filenames stay unchanged and are reported.
+Empty old directories are removed after a successful series rename; Undo recreates
+the original paths. Existing show folders are never merged.
 SQLite paths and saved matches/metadata are updated after successful moves.
 
 ## Cleanup and Undo
@@ -183,10 +191,12 @@ Multiple selected movies are processed in a review queue, with **Skip** and
 **Search & scrape unscraped items**. Re-scraping uses the same field-selection
 confirmation; it does not silently update every field.
 
-TV shows are grouped by show folder with season/file children. A show scrape
-applies show metadata to its files. Individual episode titles/plots, episode
-ordering, and missing-episode discovery are not implemented. Put each show inside
-its own folder; flat, mixed-show episode directories cannot be grouped reliably.
+TV sources index only first-level show folders, without enumerating seasons or
+episodes. Existing episode metadata stays in the local database and the library
+shows one entry per show. A show scrape updates that entry and can write
+`tvshow.nfo`. Rename scans just the selected show and resolves episode titles;
+full episode plot scraping and missing-episode discovery are not implemented.
+Put each show inside its own folder; flat episodes in the source root are not indexed.
 
 The main detail pane contains **Overview**, **Cast & crew**, **Media files**, **Artwork**,
 and **Trailer** tabs. Rows show New, Matched or Scraped status. Hover over the status for metadata, artwork and NFO details.
@@ -236,7 +246,7 @@ cargo build --release --no-default-features
 ./target/release/media-shelf --scan series /mnt/media/Series
 ```
 
-The command performs a single recursive scan and writes JSON containing paths,
+The command scans movies recursively or lists first-level series folders, and writes JSON containing paths,
 categories, sizes, and warnings. Exit status is 0 for a complete scan, 2 when the
 scan has warnings, and 1 for invalid command-line arguments. It is not yet a
 background monitoring service. This one-off JSON command does not update the

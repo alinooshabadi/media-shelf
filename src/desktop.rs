@@ -86,7 +86,7 @@ impl App {
             "Add your first folder to get started".into()
         } else {
             format!(
-                "Loaded {} saved files · Rescan folders to check for changes",
+                "Loaded {} saved items · Rescan folders to check for changes",
                 videos.len()
             )
         };
@@ -183,7 +183,7 @@ impl App {
         self.receiver = Some(receiver);
         self.status = "Scanning folders…".into();
         std::thread::spawn(move || {
-            let mut report = media_shelf::scan(&sources, &cancel, |n| {
+            let mut report = media_shelf::index(&sources, &cancel, |n| {
                 let _ = sender.send(Event::Progress(n));
             });
             let saved = (|| -> media_shelf::storage::DbResult<_> {
@@ -205,20 +205,20 @@ impl App {
             loop {
                 match receiver.try_recv() {
                     Ok(Event::Progress(n)) => {
-                        self.status = format!("Scanning folders… {n} video files found")
+                        self.status = format!("Scanning folders… {n} movies / show folders found")
                     }
                     Ok(Event::Done(report, saved)) => {
                         self.status = if report.cancelled {
                             "Scan cancelled · Saved library kept".into()
                         } else if !report.warnings.is_empty() {
                             format!(
-                                "Found {} files · {} warnings · Cached files retained",
+                                "Found {} movies / show folders · {} warnings · Cached items retained",
                                 report.videos.len(),
                                 report.warnings.len()
                             )
                         } else {
                             format!(
-                                "Scan complete · {} video files · {} warnings",
+                                "Scan complete · {} movies / show folders · {} warnings",
                                 report.videos.len(),
                                 report.warnings.len()
                             )

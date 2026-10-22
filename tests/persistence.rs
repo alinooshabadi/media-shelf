@@ -142,7 +142,7 @@ fn upgrading_a_v02_database_preserves_library_and_supports_series_matches() {
     assert_eq!(
         sql.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -271,6 +271,7 @@ fn failed_updates_roll_back_and_stale_scans_are_rejected() {
     let mut report = ScanReport::default();
     for (name, bytes) in [("good.mp4", 10), ("overflow.mp4", u64::MAX)] {
         report.videos.push(Video {
+            is_folder: false,
             artwork: Default::default(),
             category: Category::Movies,
             path: f.root.join("Movies").join(name),

@@ -26,6 +26,7 @@ mod tests {
                 overview: "Example plot".into(),
             };
             let video = Video {
+                is_folder: false,
                 artwork: Default::default(),
                 category,
                 path: "C:/fixtures/Example.mkv".into(),
@@ -130,12 +131,14 @@ fn suggested_query(video: &Video) -> String {
     if video.category == Category::Movies {
         return media_shelf::identification::local_identity(video).0;
     }
-    let name = video
-        .path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .replace(['.', '_'], " ");
+    let name = (if video.is_folder {
+        video.path.file_name()
+    } else {
+        video.path.file_stem()
+    })
+    .unwrap_or_default()
+    .to_string_lossy()
+    .replace(['.', '_'], " ");
     let stop=regex::Regex::new(r"(?i)\s*(?:\(?\b(?:19|20)\d{2}\b\)?|\bS\d{1,3}E\d{1,3}\b|\b\d{3,4}p\b|\b(?:bluray|web-dl|webrip|x264|x265|h264|h265)\b).*$").unwrap();
     let cleaned = stop.replace(&name, "").trim().to_string();
     if cleaned.is_empty() { name } else { cleaned }

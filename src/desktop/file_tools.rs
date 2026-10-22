@@ -39,6 +39,7 @@ impl FileTools {
     }
     pub fn batch(&mut self, videos: Vec<Video>, sources: Vec<Source>) {
         self.spawn(move || {
+            let indexed_show = videos.iter().any(|v| v.is_folder);
             if videos.iter().any(|v| v.tmdb.is_none() && !media_shelf::nfo::read(v).ok().flatten().is_some_and(|n| n.year.is_some())) {
                 return Err("No saved match or local NFO with title and year. Search & scrape those items before renaming.".into());
             }
@@ -55,7 +56,11 @@ impl FileTools {
                 let mut db = LibraryDb::open(&database_path()).map_err(|e| e.to_string())?;
                 file_ops::apply(&mut db, &plan).map_err(|e| e.to_string())?;
             }
-            Ok(Response::Renamed)
+            if indexed_show && !plan.notes.is_empty() {
+                Ok(Response::Finished(format!("Series organization finished.\n{}", plan.notes.join("\n"))))
+            } else {
+                Ok(Response::Renamed)
+            }
         });
     }
     pub fn cleanup(&mut self, sources: Vec<Source>, category: Category) {

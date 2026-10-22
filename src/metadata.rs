@@ -324,10 +324,6 @@ fn details_at(
     if id <= 0 {
         return Err("Invalid TMDB ID".into());
     }
-    let token = token.trim().strip_prefix("Bearer ").unwrap_or(token.trim());
-    if token.is_empty() {
-        return Err("Enter a TMDB Read Access Token in Settings.".into());
-    }
     let endpoint = if category == Category::Movies {
         "movie"
     } else {
@@ -338,10 +334,74 @@ fn details_at(
     } else {
         "credits,keywords,videos,content_ratings,external_ids"
     };
+    let data = request_json(
+        &format!("{base}/{endpoint}/{id}"),
+        token,
+        &[("language", language), ("append_to_response", append)],
+    )?;
+    parse_details(&data, category, id, language)
+}
+
+pub fn episode_titles(
+    id: i64,
+    season: u32,
+    token: &str,
+    language: &str,
+) -> Result<std::collections::BTreeMap<u32, String>, String> {
+    episode_titles_at("https://api.themoviedb.org/3", id, season, token, language)
+}
+
+fn episode_titles_at(
+    base: &str,
+    id: i64,
+    season: u32,
+    token: &str,
+    language: &str,
+) -> Result<std::collections::BTreeMap<u32, String>, String> {
+    if id <= 0 || season > 999 {
+        return Err("Invalid show ID or season number".into());
+    }
+    #[derive(Deserialize)]
+    struct Episode {
+        episode_number: u32,
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct Season {
+        season_number: u32,
+        episodes: Vec<Episode>,
+    }
+    let data = request_json(
+        &format!("{base}/tv/{id}/season/{season}"),
+        token,
+        &[("language", language)],
+    )?;
+    let data: Season = serde_json::from_value(data).map_err(|_| "Invalid TMDB season response")?;
+    if data.season_number != season {
+        return Err("TMDB returned a different season".into());
+    }
+    let mut titles = std::collections::BTreeMap::new();
+    for episode in data.episodes {
+        if !episode.name.trim().is_empty()
+            && titles
+                .insert(episode.episode_number, episode.name)
+                .is_some()
+        {
+            return Err("TMDB returned duplicate episode numbers".into());
+        }
+    }
+    Ok(titles)
+}
+
+fn request_json(url: &str, token: &str, query: &[(&str, &str)]) -> Result<Value, String> {
+    let token = token.trim().strip_prefix("Bearer ").unwrap_or(token.trim());
+    if token.is_empty() {
+        return Err("Enter a TMDB Read Access Token in Settings.".into());
+    }
     let response = client()?
-        .get(format!("{base}/{endpoint}/{id}"))
+        .get(url)
         .bearer_auth(token)
-        .query(&[("language", language), ("append_to_response", append)])
+        .query(query)
         .send()
         .map_err(|_| {
             "Could not load TMDB details. Check your connection and try again.".to_string()
@@ -362,12 +422,7 @@ fn details_at(
     if bytes.len() > 4_000_000 {
         return Err("TMDB response is too large".into());
     }
-    parse_details(
-        &serde_json::from_slice(&bytes).map_err(|_| "Invalid TMDB details response".to_string())?,
-        category,
-        id,
-        language,
-    )
+    serde_json::from_slice(&bytes).map_err(|_| "Invalid TMDB details response".to_string())
 }
 fn client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
@@ -644,6 +699,9 @@ pub fn cache_artwork(data: &mut Metadata, fields: &[Field]) -> Vec<String> {
 pub fn series_folder(video: &Video, sources: &[Source]) -> Option<PathBuf> {
     if video.category != Category::Series {
         return None;
+    }
+    if video.is_folder {
+        return Some(video.path.clone());
     }
     let source = sources
         .iter()
@@ -1158,6 +1216,64 @@ pub fn commit_scrape(
 mod request_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn season_titles_use_header_auth_and_reject_invalid_responses() {
+        for (status, body, valid) in [
+            (
+                200,
+                r#"{"season_number":1,"episodes":[{"episode_number":1,"name":"Pilot"}]}"#,
+                true,
+            ),
+            (200, r#"{"season_number":2,"episodes":[]}"#, false),
+            (
+                200,
+                r#"{"season_number":1,"episodes":[{"episode_number":1,"name":"A"},{"episode_number":1,"name":"B"}]}"#,
+                false,
+            ),
+            (401, "private-token sensitive server response", false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = vec![];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                write!(stream, "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let result = episode_titles_at(
+                &format!("http://{address}"),
+                42,
+                1,
+                "private-token",
+                "en-US",
+            );
+            let request = server.join().unwrap();
+            assert!(request.starts_with("GET /tv/42/season/1?language=en-US "));
+            assert!(!request.lines().next().unwrap().contains("private-token"));
+            assert!(
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer private-token")
+            );
+            assert_eq!(result.is_ok(), valid);
+            match result {
+                Ok(titles) => assert_eq!(titles.get(&1).map(String::as_str), Some("Pilot")),
+                Err(error) => assert!(
+                    !error.contains("private-token")
+                        && !error.contains("sensitive server response")
+                ),
+            }
+        }
+    }
     #[test]
     fn preview_requests_full_details_in_selected_language_without_query_credentials() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

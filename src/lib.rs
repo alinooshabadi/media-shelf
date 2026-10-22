@@ -39,6 +39,8 @@ pub struct Source {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Video {
     #[serde(default)]
+    pub is_folder: bool,
+    #[serde(default)]
     pub artwork: artwork::Artwork,
     pub category: Category,
     pub path: PathBuf,
@@ -83,10 +85,20 @@ pub fn is_video(path: &Path) -> bool {
 
 /// Recurses without following symlinks/junctions. Overlapping roots are deduplicated
 /// within a category; the same file may intentionally belong to both categories.
-pub fn scan(
+pub fn scan(sources: &[Source], cancel: &AtomicBool, progress: impl FnMut(usize)) -> ScanReport {
+    scan_inner(sources, cancel, progress, false)
+}
+
+/// Index show directories without enumerating their seasons, episodes or sidecars.
+pub fn index(sources: &[Source], cancel: &AtomicBool, progress: impl FnMut(usize)) -> ScanReport {
+    scan_inner(sources, cancel, progress, true)
+}
+
+fn scan_inner(
     sources: &[Source],
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize),
+    shallow_series: bool,
 ) -> ScanReport {
     let mut report = ScanReport::default();
     let mut seen = HashSet::new();
@@ -110,7 +122,10 @@ pub fn scan(
                 continue;
             }
         };
+        let folders_only = shallow_series && source.category == Category::Series;
         for entry in WalkDir::new(&root)
+            .min_depth(if folders_only { 1 } else { 0 })
+            .max_depth(if folders_only { 1 } else { usize::MAX })
             .follow_links(false)
             .follow_root_links(false)
             .into_iter()
@@ -127,24 +142,32 @@ pub fn scan(
                     continue;
                 }
             };
-            if !entry.file_type().is_file()
-                || !is_video(entry.path())
-                || identification::sample_file(entry.path())
-            {
+            if if folders_only {
+                !entry.file_type().is_dir()
+            } else {
+                !entry.file_type().is_file()
+                    || !is_video(entry.path())
+                    || identification::sample_file(entry.path())
+            } {
                 continue;
             }
             let key = (source.category.label(), entry.path().to_path_buf());
             if !seen.insert(key) {
                 continue;
             }
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(e) => {
-                    report.warnings.push(e.to_string());
-                    continue;
+            let bytes = if folders_only {
+                0
+            } else {
+                match entry.metadata() {
+                    Ok(metadata) => metadata.len(),
+                    Err(e) => {
+                        report.warnings.push(e.to_string());
+                        continue;
+                    }
                 }
             };
             report.videos.push(Video {
+                is_folder: folders_only,
                 artwork: Default::default(),
                 category: source.category,
                 path: entry.path().to_path_buf(),
@@ -153,7 +176,7 @@ pub fn scan(
                     .strip_prefix(&root)
                     .unwrap_or(entry.path())
                     .to_path_buf(),
-                bytes: metadata.len(),
+                bytes,
                 tmdb: None,
                 metadata: None,
             });

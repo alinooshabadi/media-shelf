@@ -12,6 +12,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 use walkdir::WalkDir;
+mod series;
 
 pub const QUARANTINE: &str = ".mediashelf-cleanup";
 
@@ -30,6 +31,8 @@ pub struct OperationPlan {
     pub sources: Vec<Source>,
     pub moves: Vec<FileMove>,
     pub notes: Vec<String>,
+    #[serde(default)]
+    pub folders: Vec<(PathBuf, PathBuf)>,
 }
 
 pub fn suggested_name(video: &Video) -> String {
@@ -141,6 +144,7 @@ fn rename_preview_inner(
     folders: bool,
 ) -> DbResult<OperationPlan> {
     let mut plan = OperationPlan {
+        folders: vec![],
         kind: if folders { "organize" } else { "rename" }.into(),
         sources: sources.to_vec(),
         moves: vec![],
@@ -148,6 +152,31 @@ fn rename_preview_inner(
     };
     let mut seen = HashSet::new();
     for (video, name) in requested {
+        if video.is_folder {
+            if !folders {
+                return Err("Use organization to rename a show folder.".into());
+            }
+            series::append(&mut plan, &mut seen, video, |season| {
+                let saved = crate::credentials::load(&crate::credentials::token_path())
+                    .map_err(|_| "Could not load saved TMDB token")?;
+                let token = if saved.is_empty() {
+                    std::env::var("TMDB_READ_ACCESS_TOKEN").unwrap_or_default()
+                } else {
+                    saved
+                };
+                crate::metadata::episode_titles(
+                    video
+                        .tmdb
+                        .as_ref()
+                        .ok_or("Match this show before renaming")?
+                        .id,
+                    season,
+                    &token,
+                    "en-US",
+                )
+            })?;
+            continue;
+        }
         validate_name(name)?;
         if Path::new(name).extension() != video.path.extension() {
             return Err("Keep the original video extension unchanged.".into());
@@ -301,6 +330,7 @@ fn rename_preview_inner(
 
 pub fn cleanup_preview(sources: &[Source], category: Category) -> DbResult<OperationPlan> {
     let mut plan = OperationPlan {
+        folders: vec![],
         kind: "cleanup".into(),
         sources: sources.to_vec(),
         moves: vec![],
@@ -474,6 +504,27 @@ fn validate_plan(plan: &OperationPlan, create: bool) -> DbResult<()> {
         return Err("Unknown file operation".into());
     }
     let mut destinations = HashSet::new();
+    let mut folders = HashSet::new();
+    for (from, to) in &plan.folders {
+        let source = plan
+            .sources
+            .iter()
+            .find(|s| s.category == Category::Series && from.parent() == Some(s.path.as_path()))
+            .ok_or("Show folder is outside the series source")?;
+        if plan.kind != "organize"
+            || to.parent() != Some(source.path.as_path())
+            || from.canonicalize()? != *from
+            || (from != to && fs::symlink_metadata(to).is_ok())
+            || !folders.insert(to.to_string_lossy().to_lowercase())
+        {
+            return Err("Show destination changed or conflicts with another show.".into());
+        }
+        validate_name(
+            to.file_name()
+                .and_then(|s| s.to_str())
+                .ok_or("Invalid show folder name")?,
+        )?;
+    }
     for item in &plan.moves {
         let root = plan
             .sources
@@ -577,7 +628,27 @@ fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    unsafe extern "C" {
+        fn renamex_np(
+            from: *const std::ffi::c_char,
+            to: *const std::ffi::c_char,
+            flags: u32,
+        ) -> std::ffi::c_int;
+    }
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // RENAME_EXCL preserves no-overwrite moves on SMB volumes without hard-link support.
+    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x00000004) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     // Both destinations are on the same volume; link creation cannot overwrite.
     fs::hard_link(from, to)?;
@@ -590,17 +661,24 @@ fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
 
 fn update_library(
     tx: &rusqlite::Transaction<'_>,
-    moves: &[FileMove],
+    plan: &OperationPlan,
     undo: bool,
     sources: &[Source],
 ) -> DbResult<()> {
     tx.execute_batch("PRAGMA defer_foreign_keys=ON;")?;
-    for item in moves.iter().filter(|m| m.video) {
-        let (old, new) = if undo {
-            (&item.to, &item.from)
-        } else {
-            (&item.from, &item.to)
-        };
+    for (from, to, bytes) in plan
+        .moves
+        .iter()
+        .filter(|m| m.video)
+        .map(|m| (&m.from, &m.to, m.bytes))
+        .chain(
+            plan.folders
+                .iter()
+                .filter(|(from, to)| from != to)
+                .map(|(from, to)| (from, to, 0)),
+        )
+    {
+        let (old, new) = if undo { (to, from) } else { (from, to) };
         for category in [Category::Movies, Category::Series] {
             let Some(source) = sources
                 .iter()
@@ -616,7 +694,7 @@ fn update_library(
                     text(relative)?,
                     category.label(),
                     text(old)?,
-                    i64::try_from(item.bytes)?
+                    i64::try_from(bytes)?
                 ],
             )?;
             tx.execute(
@@ -679,7 +757,7 @@ pub fn apply(db: &mut LibraryDb, plan: &OperationPlan) -> DbResult<i64> {
             moved.push(item.clone());
         }
         let saved = (|| -> DbResult<()> {
-            update_library(&tx, &plan.moves, false, &plan.sources)?;
+            update_library(&tx, plan, false, &plan.sources)?;
             tx.execute(
                 "UPDATE file_operations SET status='applied' WHERE id=?1",
                 [id],
@@ -704,10 +782,54 @@ pub fn apply(db: &mut LibraryDb, plan: &OperationPlan) -> DbResult<i64> {
                 "UPDATE file_operations SET status='failed' WHERE id=?1",
                 [id],
             )?;
+            remove_empty_show_folders(plan, true);
         }
         return Err(format!("{e} Operation #{id}; use Undo if recovery is needed.").into());
     }
+    remove_empty_show_folders(plan, false);
     Ok(id)
+}
+
+fn remove_empty_show_folders(plan: &OperationPlan, undo: bool) {
+    if plan.kind == "organize" {
+        for item in &plan.moves {
+            let vacated = if undo { &item.to } else { &item.from };
+            if !plan
+                .folders
+                .iter()
+                .any(|(from, to)| vacated.starts_with(if undo { to } else { from }))
+            {
+                continue;
+            }
+            if let Some(source) = plan
+                .sources
+                .iter()
+                .find(|s| s.category == Category::Series && vacated.starts_with(&s.path))
+            {
+                let mut parent = vacated.parent();
+                while let Some(folder) = parent.filter(|p| *p != source.path) {
+                    if fs::remove_dir(folder).is_err() {
+                        break;
+                    }
+                    parent = folder.parent();
+                }
+            }
+        }
+    }
+    for (from, to) in &plan.folders {
+        let folder = if undo { to } else { from };
+        for entry in WalkDir::new(folder)
+            .follow_links(false)
+            .follow_root_links(false)
+            .contents_first(true)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_dir() {
+                let _ = fs::remove_dir(entry.path());
+            }
+        }
+    }
 }
 
 fn rollback_moves(moved: &[FileMove], undo: bool) -> String {
@@ -756,12 +878,6 @@ pub fn undo(db: &mut LibraryDb, id: i64, plan: &OperationPlan) -> DbResult<()> {
         if item.to.exists() && !item.from.exists() {
             if fingerprint(&item.to)? != (item.bytes, item.modified_ns)
                 || item.to.canonicalize()? != item.to
-                || item
-                    .from
-                    .parent()
-                    .ok_or("Missing original folder")?
-                    .canonicalize()?
-                    != item.from.parent().unwrap()
             {
                 return Err(
                     "A file or folder changed since the operation; undo was stopped.".into(),
@@ -782,6 +898,22 @@ pub fn undo(db: &mut LibraryDb, id: i64, plan: &OperationPlan) -> DbResult<()> {
         }
     }
     let sources = db.sources()?;
+    let restore = OperationPlan {
+        kind: "organize".into(),
+        sources: sources.clone(),
+        folders: vec![],
+        notes: vec![],
+        moves: actual
+            .iter()
+            .map(|m| FileMove {
+                from: m.to.clone(),
+                to: m.from.clone(),
+                ..m.clone()
+            })
+            .collect(),
+    };
+    validate_plan(&restore, false)?;
+    validate_plan(&restore, true)?;
     let tx = db
         .connection
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -794,7 +926,7 @@ pub fn undo(db: &mut LibraryDb, id: i64, plan: &OperationPlan) -> DbResult<()> {
         moved.push(item.clone());
     }
     let saved = (|| -> DbResult<()> {
-        update_library(&tx, &plan.moves, true, &sources)?;
+        update_library(&tx, plan, true, &sources)?;
         tx.execute(
             "UPDATE file_operations SET status='undone' WHERE id=?1",
             [id],
@@ -810,5 +942,6 @@ pub fn undo(db: &mut LibraryDb, id: i64, plan: &OperationPlan) -> DbResult<()> {
         let rollback = rollback_moves(&moved, true);
         return Err(format!("Undo commit failed: {e}. {rollback}").into());
     }
+    remove_empty_show_folders(plan, true);
     Ok(())
 }

@@ -10,10 +10,20 @@ pub struct Artwork {
 }
 
 pub fn attach(videos: &mut [Video], sources: &[Source]) {
+    attach_items(videos.iter_mut().filter(|v| !v.is_folder), sources);
+}
+
+pub fn attach_one(video: &mut Video, sources: &[Source]) {
+    attach_items(std::iter::once(video), sources);
+}
+
+pub(crate) fn attach_items<'a>(videos: impl Iterator<Item = &'a mut Video>, sources: &[Source]) {
     let mut folders: HashMap<PathBuf, HashMap<String, PathBuf>> = HashMap::new();
     for video in videos {
         let mut locations = vec![];
-        if let Some(parent) = video.path.parent() {
+        if video.is_folder {
+            locations.push(video.path.clone());
+        } else if let Some(parent) = video.path.parent() {
             locations.push(parent.to_path_buf());
         }
         if video.category == Category::Series {

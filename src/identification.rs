@@ -109,6 +109,7 @@ mod tests {
             ),
         ] {
             let video = Video {
+                is_folder: false,
                 artwork: Default::default(),
                 category: Category::Movies,
                 path: std::path::Path::new("I:/Movies/Movies").join(path),

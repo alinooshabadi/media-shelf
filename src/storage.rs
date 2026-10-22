@@ -52,7 +52,7 @@ impl LibraryDb {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err("This database was created by a newer Media Shelf version.".into());
         }
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -106,9 +106,17 @@ impl LibraryDb {
                 PRIMARY KEY(category,path),
                 FOREIGN KEY(category,path) REFERENCES videos(category,path) ON DELETE CASCADE
             );
-            PRAGMA user_version = 4;
         ",
         )?;
+        let has_folder_column: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('videos') WHERE name='is_folder')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_folder_column {
+            tx.execute_batch("ALTER TABLE videos ADD COLUMN is_folder INTEGER NOT NULL DEFAULT 0 CHECK(is_folder IN (0,1));")?;
+        }
+        tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
         Ok(Self { connection })
     }
@@ -155,7 +163,20 @@ impl LibraryDb {
     }
     pub fn videos(&self) -> DbResult<Vec<Video>> {
         let mut videos = read_videos(&self.connection)?;
-        crate::artwork::attach(&mut videos, &self.sources()?);
+        let folders: std::collections::HashSet<_> = videos
+            .iter()
+            .filter(|v| v.is_folder)
+            .map(|v| v.path.clone())
+            .collect();
+        videos.retain(|v| {
+            v.category != Category::Series
+                || v.is_folder
+                || !v.path.ancestors().skip(1).any(|p| folders.contains(p))
+        });
+        crate::artwork::attach_items(
+            videos.iter_mut().filter(|v| v.category == Category::Movies),
+            &self.sources()?,
+        );
         Ok(videos)
     }
 
@@ -285,21 +306,23 @@ impl LibraryDb {
                 "Folder selections changed during this scan. Restart the app and rescan.".into(),
             );
         }
+        let previous = read_videos(&tx)?;
         tx.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS scan_seen (
             category TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(category, path));
             DELETE FROM scan_seen;",
         )?;
         {
-            let mut insert = tx.prepare("INSERT INTO videos(category, path, relative_path, bytes)
-                VALUES (?1, ?2, ?3, ?4) ON CONFLICT(category, path) DO UPDATE SET
-                relative_path=excluded.relative_path, bytes=excluded.bytes, last_seen_at=unixepoch()")?;
+            let mut insert = tx.prepare("INSERT INTO videos(category, path, relative_path, bytes, is_folder)
+                VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(category, path) DO UPDATE SET
+                relative_path=excluded.relative_path, bytes=excluded.bytes, is_folder=excluded.is_folder, last_seen_at=unixepoch()")?;
             let mut seen =
                 tx.prepare("INSERT OR IGNORE INTO scan_seen(category, path) VALUES (?1, ?2)")?;
             for video in &report.videos {
-                if !sources
-                    .iter()
-                    .any(|s| s.category == video.category && video.path.starts_with(&s.path))
+                if (video.is_folder && video.category != Category::Series)
+                    || !sources
+                        .iter()
+                        .any(|s| s.category == video.category && video.path.starts_with(&s.path))
                 {
                     return Err("Scan returned a file outside the selected folders.".into());
                 }
@@ -307,9 +330,35 @@ impl LibraryDb {
                     video.category.label(),
                     path_text(&video.path)?,
                     path_text(&video.relative_path)?,
-                    i64::try_from(video.bytes)?
+                    i64::try_from(video.bytes)?,
+                    video.is_folder
                 ])?;
                 seen.execute(params![video.category.label(), path_text(&video.path)?])?;
+                if video.is_folder {
+                    let cached: Vec<_> = previous
+                        .iter()
+                        .filter(|v| {
+                            v.category == Category::Series
+                                && !v.is_folder
+                                && v.path.starts_with(&video.path)
+                        })
+                        .collect();
+                    // Keep episode metadata locally; shallow indexing cannot confirm episode deletions.
+                    for old in &cached {
+                        seen.execute(params![old.category.label(), path_text(&old.path)?])?;
+                    }
+                    if let Some(old) = cached
+                        .into_iter()
+                        .max_by_key(|v| (v.metadata.is_some(), v.tmdb.is_some()))
+                    {
+                        tx.execute("INSERT OR IGNORE INTO tmdb_matches(category,path,tmdb_id,title,original_title,release_date,overview,matched_at)
+                            SELECT category,?1,tmdb_id,title,original_title,release_date,overview,matched_at FROM tmdb_matches WHERE category='Series' AND path=?2",
+                            params![path_text(&video.path)?, path_text(&old.path)?])?;
+                        tx.execute("INSERT OR IGNORE INTO scraped_metadata(category,path,data_json,scraped_at)
+                            SELECT category,?1,data_json,scraped_at FROM scraped_metadata WHERE category='Series' AND path=?2",
+                            params![path_text(&video.path)?, path_text(&old.path)?])?;
+                    }
+                }
             }
         }
         if report.warnings.is_empty() {
@@ -374,7 +423,7 @@ fn read_sources(connection: &Connection) -> DbResult<Vec<Source>> {
 fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     let mut stmt = connection.prepare(
         "SELECT v.category, v.path, v.relative_path, v.bytes,
-        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json FROM videos v
+        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json,v.is_folder FROM videos v
         LEFT JOIN tmdb_matches m ON m.category=v.category AND m.path=v.path
         LEFT JOIN scraped_metadata s ON s.category=v.category AND s.path=v.path
         ORDER BY v.category, v.path COLLATE NOCASE",
@@ -382,6 +431,7 @@ fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     Ok(stmt
         .query_map([], |r| {
             Ok(Video {
+                is_folder: r.get(10)?,
                 artwork: Default::default(),
                 category: category(r)?,
                 path: r.get::<_, String>(1)?.into(),
