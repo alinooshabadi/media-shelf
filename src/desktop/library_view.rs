@@ -10,7 +10,7 @@ fn folder_link(ui: &mut egui::Ui, label: &str, folder: &std::path::Path) -> Opti
                 .sense(egui::Sense::click()),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!("Open folder in Explorer\n{}", display_path(folder)));
+        .on_hover_text(format!("Open containing folder\n{}", display_path(folder)));
     if !response.clicked() {
         return None;
     }
@@ -28,7 +28,11 @@ fn folder_link(ui: &mut egui::Ui, label: &str, folder: &std::path::Path) -> Opti
             .creation_flags(0x08000000)
             .spawn()
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("/usr/bin/open")
+        .arg(folder)
+        .spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
     let result = std::process::Command::new("xdg-open").arg(folder).spawn();
     result.err().map(|e| format!("Could not open folder: {e}"))
 }

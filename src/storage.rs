@@ -15,6 +15,12 @@ pub struct LibraryDb {
 }
 
 pub fn database_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let root = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("Library/Application Support");
+    #[cfg(not(target_os = "macos"))]
     let root = std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
@@ -25,6 +31,16 @@ pub fn database_path() -> PathBuf {
                 .join(".config")
         });
     root.join("MediaShelf").join("library.sqlite3")
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_library_uses_application_support() {
+    let home = std::env::var_os("HOME").expect("macOS user home");
+    assert_eq!(
+        database_path(),
+        PathBuf::from(home).join("Library/Application Support/MediaShelf/library.sqlite3")
+    );
 }
 
 impl LibraryDb {

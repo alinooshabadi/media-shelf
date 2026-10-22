@@ -1,17 +1,18 @@
 # User guide
 
-A Rust media manager for Windows with a minimal light interface, a library/detail layout and
+A Rust media manager for Windows and macOS with a minimal light interface, a library/detail layout and
 a separate search, preview, field-selection, and scrape workflow.
 
 ## Run
 
 Close any older running version, then double-click `MediaShelf-v0.6.8.exe`
-next to this project folder (or `MediaShelf.exe` if it was replaced). In the app:
+next to this project folder (or `MediaShelf.exe` if it was replaced).
+On macOS, open **Media Shelf.app** instead. In the app:
 
 1. Choose **Movies** or **TV shows**.
 2. Open **Data sources** and browse for a folder, or paste a folder path and click **Add**.
 3. The scan starts automatically. Add more folders if needed.
-4. Filter by title/path. Select rows to view details; Ctrl-click selects multiple movies.
+4. Filter by title/path. Select rows to view details; Ctrl-click (Command-click on Mac) selects multiple movies.
 5. Right-click a movie, TV show or episode for **Search & scrape** and **Rename**. Right-clicking a selected item keeps the multi-selection. Rename applies the default format immediately; selected items need a saved match or local NFO with title/year.
 6. Click **Update sources** after adding files to your media folders.
 
@@ -35,6 +36,8 @@ cancellation until the current filesystem operation returns.
 The database stores categories, full and relative paths, file sizes, first/last
 seen timestamps, and completed scan counts/timestamps. Updates use transactions.
 To back up the library, close the app and copy `library.sqlite3`.
+On macOS, the database is `~/Library/Application Support/MediaShelf/library.sqlite3`.
+Artwork, token files and output backups also live in this directory.
 On Linux the desktop uses `$XDG_CONFIG_HOME/MediaShelf/library.sqlite3`, or
 `~/.config/MediaShelf/library.sqlite3` when that variable is unset.
 
@@ -192,7 +195,8 @@ Click **Save token** in API settings once. The saved token loads automatically o
 On Windows it is protected with user-scoped DPAPI in
 `%LOCALAPPDATA%\MediaShelf\tmdb-token.dat`; it is not stored in SQLite.
 **Forget token** removes the saved copy and clears the current field.
-On Linux, the user-local token file has owner-only permissions (0600).
+On macOS and Linux, the user-local token file has owner-only permissions (0600).
+It is not encrypted; macOS Keychain storage is not implemented.
 You may alternatively set `TMDB_READ_ACCESS_TOKEN` before launching the app.
 The editable search title, category, language, page, and selected provider IDs are sent to TMDB;
 local folder paths and media files are not sent. Search runs in the background
@@ -211,7 +215,16 @@ cargo test
 ```
 
 Or run `build.ps1`, which also recognizes the portable toolchain prepared in this
-workspace. The shared library in `src/lib.rs` contains no GUI dependencies.
+workspace. On macOS, install stable Rust and Xcode command-line tools, then run:
+
+```sh
+./build-macos.sh
+open "target/macos/Media Shelf.app"
+```
+
+This builds for the current Mac's architecture and creates a locally signed app
+bundle. Public Developer ID signing, notarization and universal builds are not included.
+The shared library in `src/lib.rs` contains no GUI dependencies.
 
 ## Raspberry Pi / headless use
 

@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/alinooshabadi/media-shelf/blob/main/Cargo.toml"><img alt="Version 0.6.8" src="https://img.shields.io/badge/version-0.6.8-3865a9?style=for-the-badge" height="22"></a>
-  <a href="#running-from-binaries"><img alt="Windows desktop" src="https://img.shields.io/badge/desktop-Windows-3865a9?style=for-the-badge" height="22"></a>
+  <a href="#running-from-binaries"><img alt="Windows and macOS desktop" src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS-3865a9?style=for-the-badge" height="22"></a>
   <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/built_with-Rust-dea584?style=for-the-badge" height="22"></a>
   <a href="#configuration"><img alt="SQLite library" src="https://img.shields.io/badge/library-SQLite-4479a1?style=for-the-badge" height="22"></a>
   <a href="docs/USER_GUIDE.md"><img alt="User guide" src="https://img.shields.io/badge/docs-user_guide-4c9362?style=for-the-badge" height="22"></a>
@@ -29,7 +29,7 @@ Inspired by tinyMediaManager's library and search-and-scrape workflow, with a Ru
 
 ### Dependencies
 
-- Windows x64 for the tested desktop build.
+- Windows x64 or a macOS build matching your Mac's architecture.
 - Internet access and a TMDB API Read Access Token for online search and scraping.
 
 SQLite is bundled. Rust and a separate database server are not required to run the Windows executable. Existing NFO and local artwork discovery work without a TMDB token.
@@ -41,6 +41,8 @@ If you have a packaged executable, run `MediaShelf-v0.6.8.exe` and:
 3. Open **Settings**, enter your TMDB Read Access Token and click **Save token**.
 4. Use **Search & scrape** to preview a match, choose fields and click **OK — Scrape**.
 5. Right-click an item for **Search & scrape** or **Rename**. Click its displayed path to open the containing folder in Explorer.
+
+On macOS, open **Media Shelf.app**. The same screens and workflow are shared across both platforms.
 
 No binaries have been published to this repository's [Releases](https://github.com/alinooshabadi/media-shelf/releases) page yet. Build from source if you do not already have an executable.
 
@@ -67,11 +69,29 @@ To build without launching:
 cargo build --release --locked
 ```
 
-The executable is written to `target/release/media-shelf.exe`. The PowerShell build helper also produces versioned copies in the parent directory:
+On Windows, the executable is written to `target/release/media-shelf.exe`. The PowerShell build helper also produces versioned copies in the parent directory:
 
 ```powershell
 .\build.ps1
 ```
+
+### macOS app bundle
+
+Install stable Rust and Apple's Xcode command-line tools (`xcode-select --install`), then run:
+
+```sh
+./build-macos.sh
+open "target/macos/Media Shelf.app"
+```
+
+The script builds a native executable for the build Mac (Apple Silicon or Intel),
+packages it into `target/macos/Media Shelf.app`, and applies a local ad-hoc signature.
+You can copy the app to Applications. It is not Developer ID signed or notarized;
+a downloaded copy may require approval in macOS Privacy & Security settings.
+Building a universal binary is not included.
+
+For an executable without an app bundle, use `cargo build --release --locked`;
+the result is `target/release/media-shelf`.
 
 ## Running without the desktop
 
@@ -114,6 +134,11 @@ On Windows, the library is stored at:
 
 Saved tokens are protected with Windows user-scoped DPAPI in `tmdb-token.dat` beside the database. Use **Forget token** to remove the saved copy. `TMDB_READ_ACCESS_TOKEN` is supported as a fallback when no token is saved.
 
+On macOS, the database is stored at
+`~/Library/Application Support/MediaShelf/library.sqlite3`. The token file is in
+the same directory, with owner-only permissions (0600); it is not encrypted or
+stored in Keychain. `TMDB_READ_ACCESS_TOKEN` also works on macOS.
+
 Artwork caches and backups of explicitly replaced NFO/artwork files are also stored in the app's data directory. See the [user guide](docs/USER_GUIDE.md) for source behavior, scanning, output options and Linux paths.
 
 ## Development
@@ -125,6 +150,11 @@ cargo test --locked
 ```
 
 The current Windows build passes 48 tests covering scanning, local artwork, NFO import/export, persistence, TMDB HTTP fixtures, rename collisions, recovery, Undo and in-process UI rendering.
+
+On Apple Silicon macOS, `cargo test --locked` passes 48 tests and
+`cargo test --locked --no-default-features` passes 46 tests. The release app
+has also been checked for launch, fixture scanning and opening folders in Finder.
+Intel Mac builds have not been verified.
 
 TV scraping currently applies show metadata; individual episode scraping is not implemented. Streaming, Docker packaging, automatic folder watching and a web UI are not available.
 
