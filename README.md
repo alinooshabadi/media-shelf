@@ -1,12 +1,23 @@
 # Media Shelf
 
+<p>
+  <a href="https://github.com/alinooshabadi/media-shelf/blob/main/Cargo.toml"><img alt="Version 0.6.8" src="https://img.shields.io/badge/version-0.6.8-3865a9?style=for-the-badge" height="22"></a>
+  <a href="https://github.com/alinooshabadi/media-shelf/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/alinooshabadi/media-shelf?style=for-the-badge" height="22"></a>
+  <a href="#getting-started"><img alt="Windows and macOS desktop" src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS-3865a9?style=for-the-badge" height="22"></a>
+  <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/built_with-Rust-dea584?style=for-the-badge" height="22"></a>
+  <a href="#configuration"><img alt="SQLite library" src="https://img.shields.io/badge/library-SQLite-4479a1?style=for-the-badge" height="22"></a>
+  <a href="docs/USER_GUIDE.md"><img alt="User guide" src="https://img.shields.io/badge/docs-user_guide-4c9362?style=for-the-badge" height="22"></a>
+  <a href="https://github.com/alinooshabadi/media-shelf/commits/main/"><img alt="Latest commit" src="https://img.shields.io/github/last-commit/alinooshabadi/media-shelf?style=for-the-badge" height="22"></a>
+</p>
+
 A desktop app for organizing local movie and TV collections on Windows and macOS, built with Rust and egui.
 
 [User guide](docs/USER_GUIDE.md) · [Releases](https://github.com/alinooshabadi/media-shelf/releases)
 
 ## Features
 
-- Browse and filter movie and TV libraries.
+- Browse sortable movie libraries and expandable TV show, season and episode trees.
+- Track added dates and optionally display missing seasons and episodes from TMDB.
 - Search TMDB for metadata, posters, fanart, cast and crew.
 - Import local movie NFOs and artwork.
 - Organize folders, videos and subtitles with overwrite protection and Undo.
@@ -53,7 +64,7 @@ The script builds the executable and creates versioned copies in the parent dire
 
 ## Library organization
 
-Movies are scanned recursively. Series indexing lists only first-level show folders to keep network library scans fast; episode files are scanned when renaming a selected show.
+Movies are scanned recursively. Series indexing lists only first-level show folders to keep network library scans fast; episodes load when you expand or rename a selected show.
 
 Default layouts:
 

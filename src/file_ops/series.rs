@@ -7,19 +7,10 @@ static EPISODE: LazyLock<regex::Regex> = LazyLock::new(|| {
 static SEASON: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"(?i)^season[ ._-]*(\d{1,3})$").unwrap());
 
-fn episode(path: &Path) -> Option<(u32, u32, usize)> {
+fn episode_start(path: &Path) -> Option<(u32, u32, usize)> {
     let stem = path.file_stem()?.to_str()?;
     let captures = EPISODE.captures(stem)?;
     let end = captures.get(0)?.end();
-    let tail = &stem[end..];
-    // shortcut: multi-episode files keep their names until explicit multi-episode title rules exist.
-    if tail.starts_with(|c: char| c.is_ascii_alphanumeric())
-        || tail.strip_prefix('-').is_some_and(|t| {
-            t.starts_with(|c: char| c.eq_ignore_ascii_case(&'e') || c.is_ascii_digit())
-        })
-    {
-        return None;
-    }
     Some((
         captures
             .get(1)
@@ -37,8 +28,48 @@ fn episode(path: &Path) -> Option<(u32, u32, usize)> {
     ))
 }
 
-fn local_title(path: &Path, season: u32, number: u32, end: usize) -> DbResult<Option<String>> {
-    match fs::File::open(path.with_extension("nfo")) {
+fn episode(path: &Path) -> Option<(u32, u32, usize)> {
+    let (season, number, end) = episode_start(path)?;
+    let stem = path.file_stem()?.to_str()?;
+    let tail = &stem[end..];
+    // shortcut: multi-episode files keep their names until explicit multi-episode title rules exist.
+    if tail.starts_with(|c: char| c.is_ascii_alphanumeric())
+        || tail.strip_prefix('-').is_some_and(|t| {
+            t.starts_with(|c: char| c.eq_ignore_ascii_case(&'e') || c.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+    Some((season, number, end))
+}
+
+pub(super) fn numbers(path: &Path) -> Option<(u32, Vec<u32>)> {
+    let (season, first, end) = episode_start(path)?;
+    let stem = path.file_stem()?.to_str()?;
+    let mut tail = &stem[end..];
+    let mut numbers = vec![first];
+    static NEXT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)^(e|-(?:e)?)(\d{1,3})").unwrap());
+    while let Some(c) = NEXT.captures(tail) {
+        let n: u32 = c[2].parse().ok()?;
+        if c[1].starts_with('-') {
+            if n < *numbers.last()? || n - numbers.last()? > 100 {
+                return None;
+            }
+            numbers.extend((numbers.last()? + 1)..=n);
+        } else {
+            numbers.push(n);
+        }
+        tail = &tail[c[0].len()..];
+    }
+    if tail.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some((season, numbers))
+}
+
+fn nfo_title(path: &Path, season: u32, number: u32) -> DbResult<Option<String>> {
+    match fs::File::open(path) {
         Ok(file) => {
             let mut bytes = vec![];
             file.take(4_000_001).read_to_end(&mut bytes)?;
@@ -66,6 +97,35 @@ fn local_title(path: &Path, season: u32, number: u32, end: usize) -> DbResult<Op
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
+    Ok(None)
+}
+
+fn local_title(
+    path: &Path,
+    season: u32,
+    number: u32,
+    end: usize,
+    siblings: &[PathBuf],
+) -> DbResult<Option<String>> {
+    if let Some(title) = nfo_title(&path.with_extension("nfo"), season, number)? {
+        return Ok(Some(title));
+    }
+    let mut titles = std::collections::BTreeSet::new();
+    for sibling in siblings.iter().filter(|p| {
+        p.parent() == path.parent()
+            && p.extension().is_some_and(|s| s.eq_ignore_ascii_case("nfo"))
+            && episode(p).is_some_and(|(s, e, _)| (s, e) == (season, number))
+    }) {
+        if let Some(title) = nfo_title(sibling, season, number)? {
+            titles.insert(title);
+        }
+    }
+    if titles.len() > 1 {
+        return Err(format!("Conflicting NFO titles for S{season:02}E{number:02}; choose the correct NFO before renaming.").into());
+    }
+    if let Some(title) = titles.into_iter().next() {
+        return Ok(Some(title));
+    }
     let title = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -77,6 +137,77 @@ fn local_title(path: &Path, season: u32, number: u32, end: usize) -> DbResult<Op
     )
     .unwrap();
     Ok(title.filter(|s| !technical.is_match(s)).map(str::to_owned))
+}
+
+pub(super) fn details(
+    path: &Path,
+    siblings: &[PathBuf],
+) -> DbResult<Option<(u32, u32, Option<String>)>> {
+    let Some((season, number, end)) = episode(path) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        season,
+        number,
+        local_title(path, season, number, end, siblings)?,
+    )))
+}
+
+fn episode_name(
+    path: &Path,
+    title: &str,
+    siblings: &[PathBuf],
+    seasons: &mut BTreeMap<u32, BTreeMap<u32, String>>,
+    fetch: &mut impl FnMut(u32) -> Result<BTreeMap<u32, String>, String>,
+) -> DbResult<Option<String>> {
+    let Some((season, number, end)) = episode(path) else {
+        return Ok(None);
+    };
+    let episode_title = if let Some(title) = local_title(path, season, number, end, siblings)? {
+        title
+    } else {
+        if !seasons.contains_key(&season) {
+            seasons.insert(season, fetch(season)?);
+        }
+        seasons[&season]
+            .get(&number)
+            .filter(|s| !s.trim().is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                format!("Episode title missing for S{season:02}E{number:02}; nothing was renamed.")
+            })?
+    };
+    let name = format!(
+        "{} - S{season:02}E{number:02} - {}.{}",
+        sanitize_title(title),
+        sanitize_title(&episode_title),
+        path.extension().unwrap_or_default().to_string_lossy()
+    );
+    validate_name(&name)?;
+    Ok(Some(name))
+}
+
+pub(super) fn name(
+    video: &Video,
+    mut fetch: impl FnMut(u32) -> Result<BTreeMap<u32, String>, String>,
+) -> DbResult<Option<String>> {
+    if episode(&video.path).is_none() {
+        return Ok(None);
+    }
+    let matched = video
+        .tmdb
+        .as_ref()
+        .ok_or("Match this show before renaming")?;
+    let files = fs::read_dir(video.path.parent().ok_or("Missing episode folder")?)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    episode_name(
+        &video.path,
+        &matched.title,
+        &files,
+        &mut BTreeMap::new(),
+        &mut fetch,
+    )
 }
 
 fn destination(root: &Path, target: &Path, file: &Path) -> DbResult<PathBuf> {
@@ -165,35 +296,15 @@ pub(super) fn append(
         .iter()
         .filter(|p| crate::is_video(p) && !crate::identification::sample_file(p))
     {
-        let Some((season, number, end)) = episode(file) else {
+        let Some((season, _, _)) = episode(file) else {
             plan.notes.push(format!(
                 "Unrecognized episode numbering; filename kept: {}",
                 file.display()
             ));
             continue;
         };
-        let episode_title = if let Some(title) = local_title(file, season, number, end)? {
-            title
-        } else {
-            if !seasons.contains_key(&season) {
-                seasons.insert(season, fetch(season)?);
-            }
-            seasons[&season]
-                .get(&number)
-                .filter(|s| !s.trim().is_empty())
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "Episode title missing for S{season:02}E{number:02}; nothing was renamed."
-                    )
-                })?
-        };
-        let name = format!(
-            "{title} - S{season:02}E{number:02} - {}.{}",
-            sanitize_title(&episode_title),
-            file.extension().unwrap_or_default().to_string_lossy()
-        );
-        validate_name(&name)?;
+        let name = episode_name(file, &title, &files, &mut seasons, &mut fetch)?
+            .ok_or("Unrecognized episode numbering")?;
         episodes.insert(
             file.clone(),
             target.join(format!("Season {season}")).join(name),
@@ -236,6 +347,64 @@ pub(super) fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflicting_sibling_nfos_stop_the_rename_without_a_guess() {
+        let (_temp, db, show) = fixture();
+        let season = show.path.join("Season 01");
+        for (name, title) in [
+            ("A Show - S01E01 - First.nfo", "First"),
+            ("A Show - S01E01 - Other.nfo", "Other"),
+        ] {
+            fs::write(season.join(name), format!("<episodedetails><title>{title}</title><season>1</season><episode>1</episode></episodedetails>")).unwrap();
+        }
+        let mut plan = OperationPlan {
+            kind: "organize".into(),
+            sources: db.sources().unwrap(),
+            moves: vec![],
+            folders: vec![],
+            notes: vec![],
+        };
+        let error = append(&mut plan, &mut HashSet::new(), &show, |_| {
+            panic!("Conflicting local titles must not be silently replaced by TMDB")
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Conflicting NFO titles for S01E01")
+        );
+        assert!(season.join("release.S01E01.1080p.mkv").exists());
+        assert!(plan.moves.is_empty());
+    }
+
+    #[test]
+    fn show_rename_uses_numbered_sibling_nfos_without_tmdb() {
+        let (_temp, db, show) = fixture();
+        let season = show.path.join("Season 01");
+        fs::write(season.join("A Show - S01E01 - Pilot.nfo"),
+            "<episodedetails><title>Pilot</title><season>1</season><episode>1</episode></episodedetails>").unwrap();
+        fs::write(season.join("release.S01E03.nfo"),
+            "<episodedetails><title>Third Episode</title><season>1</season><episode>3</episode></episodedetails>").unwrap();
+        let mut plan = OperationPlan {
+            kind: "organize".into(),
+            sources: db.sources().unwrap(),
+            moves: vec![],
+            folders: vec![],
+            notes: vec![],
+        };
+        append(&mut plan, &mut HashSet::new(), &show, |_| {
+            panic!(
+                "The existing numbered NFOs supply every episode title; no TMDB request is needed"
+            )
+        })
+        .unwrap();
+        assert!(
+            plan.moves
+                .iter()
+                .any(|m| m.video && m.to.ends_with("A Show - S01E01 - Pilot.mkv"))
+        );
+    }
 
     #[test]
     fn exclusive_move_refuses_to_replace_an_existing_file() {
@@ -427,7 +596,9 @@ mod tests {
         let path = Path::new("Show - S01E01 - Pilot.mkv");
         let (season, number, end) = episode(path).unwrap();
         assert_eq!(
-            local_title(path, season, number, end).unwrap().as_deref(),
+            local_title(path, season, number, end, &[])
+                .unwrap()
+                .as_deref(),
             Some("Pilot")
         );
         assert_eq!(

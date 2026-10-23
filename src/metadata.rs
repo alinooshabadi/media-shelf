@@ -393,6 +393,149 @@ fn episode_titles_at(
     Ok(titles)
 }
 
+/// Aired TMDB episodes for optional missing-file display. No library or media writes.
+pub fn episode_catalog(
+    id: i64,
+    token: &str,
+    language: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, String>>, String> {
+    let today = utc_date(
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "System clock is before 1970")?
+            .as_secs(),
+    );
+    episode_catalog_at(
+        "https://api.themoviedb.org/3",
+        id,
+        token,
+        language,
+        &today,
+        cancel,
+    )
+}
+
+fn utc_date(seconds: u64) -> String {
+    let z = (seconds / 86400) as i64 + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn episode_catalog_at(
+    base: &str,
+    id: i64,
+    token: &str,
+    language: &str,
+    today: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, String>>, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    if id <= 0 {
+        return Err("Invalid show ID".into());
+    }
+    #[derive(Deserialize)]
+    struct SeasonRef {
+        season_number: u32,
+    }
+    #[derive(Deserialize)]
+    struct Show {
+        id: i64,
+        seasons: Vec<SeasonRef>,
+    }
+    #[derive(Deserialize)]
+    struct Episode {
+        episode_number: u32,
+        name: String,
+        air_date: Option<String>,
+        season_number: u32,
+    }
+    #[derive(Deserialize)]
+    struct Season {
+        season_number: u32,
+        episodes: Vec<Episode>,
+    }
+    let check_cancel = || {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            Err("Episode check cancelled".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    check_cancel()?;
+    let show: Show = serde_json::from_value(request_json(
+        &format!("{base}/tv/{id}"),
+        token,
+        &[("language", language)],
+    )?)
+    .map_err(|_| "Invalid TMDB show response")?;
+    if show.id != id || show.seasons.len() > 1000 {
+        return Err("Invalid TMDB show response".into());
+    }
+    let mut result = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for season in show.seasons {
+        check_cancel()?;
+        let n = season.season_number;
+        if n > 999 || !seen.insert(n) {
+            return Err("Invalid TMDB season list".into());
+        }
+        let season: Season = serde_json::from_value(request_json(
+            &format!("{base}/tv/{id}/season/{n}"),
+            token,
+            &[("language", language)],
+        )?)
+        .map_err(|_| "Invalid TMDB season response")?;
+        if season.season_number != n {
+            return Err("TMDB returned a different season".into());
+        }
+        let mut episodes = BTreeMap::new();
+        let mut seen_episodes = BTreeSet::new();
+        for episode in season.episodes {
+            if episode.season_number != n
+                || episode.episode_number == 0
+                || !seen_episodes.insert(episode.episode_number)
+            {
+                return Err("Invalid or duplicate TMDB episode numbering".into());
+            }
+            if episode.air_date.as_deref().is_some_and(|d| {
+                d.len() == 10
+                    && d.bytes().enumerate().all(|(i, b)| {
+                        if i == 4 || i == 7 {
+                            b == b'-'
+                        } else {
+                            b.is_ascii_digit()
+                        }
+                    })
+                    && ("01"..="12").contains(&&d[5..7])
+                    && ("01"..="31").contains(&&d[8..10])
+                    && d <= today
+            }) {
+                episodes.insert(
+                    episode.episode_number,
+                    if episode.name.trim().is_empty() {
+                        format!("Episode {}", episode.episode_number)
+                    } else {
+                        episode.name
+                    },
+                );
+            }
+        }
+        if !episodes.is_empty() {
+            result.insert(n, episodes);
+        }
+    }
+    Ok(result)
+}
+
 fn request_json(url: &str, token: &str, query: &[(&str, &str)]) -> Result<Value, String> {
     let token = token.trim().strip_prefix("Bearer ").unwrap_or(token.trim());
     if token.is_empty() {
@@ -677,9 +820,7 @@ pub fn cache_artwork(data: &mut Metadata, fields: &[Field]) -> Vec<String> {
                     .map_err(|_| "Cannot save artwork".to_string())?;
                 f.write_all(&bytes)
                     .map_err(|_| "Cannot save artwork".to_string())?;
-                f.as_file()
-                    .sync_all()
-                    .map_err(|_| "Cannot save artwork".to_string())?;
+                sync_output(f.as_file()).map_err(|_| "Cannot save artwork".to_string())?;
                 if let Err(e) = f.persist_noclobber(&target) {
                     if e.error.kind() != std::io::ErrorKind::AlreadyExists {
                         return Err("Cannot save artwork".into());
@@ -1034,7 +1175,7 @@ pub fn write_output(path: &Path, bytes: &[u8], replace: bool, backup: &Path) -> 
         tempfile::NamedTempFile::new_in(path.parent().ok_or("NFO has no parent folder")?)
             .map_err(|e| e.to_string())?;
     output.write_all(bytes).map_err(|e| e.to_string())?;
-    output.as_file().sync_all().map_err(|e| e.to_string())?;
+    sync_output(output.as_file()).map_err(|e| format!("Cannot flush output: {e}"))?;
     if path.exists() {
         if !replace {
             return Err(
@@ -1063,10 +1204,118 @@ pub fn write_output(path: &Path, bytes: &[u8], replace: bool, backup: &Path) -> 
             .map(|_| ())
             .map_err(|e| format!("Cannot write NFO: {}", e.error))
     } else {
-        output
-            .persist_noclobber(path)
-            .map(|_| ())
-            .map_err(|e| format!("Cannot create NFO: {}", e.error))
+        match output.persist_noclobber(path) {
+            Ok(_) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Err(error) if unsupported_macos_operation(&error.error) => {
+                // shortcut: NAS without exclusive rename exposes new outputs while writing; use server-side atomic creation when available.
+                create_output(path, bytes, sync_output)
+                    .map_err(|e| format!("Cannot create output: {e}"))
+            }
+            Err(error) => Err(format!("Cannot create output: {}", error.error)),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn unsupported_macos_operation(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(45) || error.kind() == std::io::ErrorKind::Unsupported
+}
+
+#[cfg(target_os = "macos")]
+fn create_output(
+    path: &Path,
+    bytes: &[u8],
+    sync: impl FnOnce(&fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| sync(&file)) {
+        drop(file);
+        if let Err(cleanup) = fs::remove_file(path)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(std::io::Error::other(format!(
+                "{error}; could not remove partial output {}: {cleanup}",
+                path.display()
+            )));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn sync_output(file: &fs::File) -> std::io::Result<()> {
+    sync_output_with(file, fs::File::sync_all)
+}
+
+fn sync_output_with(
+    file: &fs::File,
+    sync: impl FnOnce(&fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let result = sync(file);
+    #[cfg(target_os = "macos")]
+    if let Err(error) = &result
+        && unsupported_macos_operation(error)
+    {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            fn fsync(fd: std::ffi::c_int) -> std::ffi::c_int;
+        }
+        // macOS ENOTSUP (45): SMB may support fsync but not F_FULLFSYNC.
+        loop {
+            if unsafe { fsync(file.as_raw_fd()) } == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod output_sync_tests {
+    use super::*;
+
+    #[test]
+    fn guarded_creation_refuses_overwrites_and_removes_failed_partial_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("tvshow.nfo");
+        create_output(&path, b"original", sync_output).unwrap();
+        assert_eq!(
+            create_output(&path, b"replacement", sync_output)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        let partial = temp.path().join("partial.nfo");
+        assert!(
+            create_output(&partial, b"partial", |_| Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )))
+            .is_err()
+        );
+        assert!(!partial.exists());
+    }
+
+    #[test]
+    fn unsupported_full_sync_falls_back_but_other_errors_are_not_ignored() {
+        let file = tempfile::tempfile().unwrap();
+        sync_output_with(&file, |_| Err(std::io::Error::from_raw_os_error(45))).unwrap();
+        let error = sync_output_with(&file, |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        sync_output(&file).unwrap();
     }
 }
 
@@ -1216,6 +1465,75 @@ pub fn commit_scrape(
 mod request_tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn catalog_uses_explicit_seasons_and_only_aired_episodes_with_safe_header_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = vec![];
+            for body in [
+                r#"{"id":42,"seasons":[{"season_number":1},{"season_number":2}]}"#,
+                r#"{"season_number":1,"episodes":[{"season_number":1,"episode_number":1,"name":"Pilot","air_date":"2020-01-01"},{"season_number":1,"episode_number":2,"name":"Second","air_date":"2020-01-02"},{"season_number":1,"episode_number":3,"name":"Third","air_date":"2020-01-03"}]}"#,
+                r#"{"season_number":2,"episodes":[{"season_number":2,"episode_number":1,"name":"Return","air_date":"2021-01-01"},{"season_number":2,"episode_number":2,"name":"Future","air_date":"2099-01-01"},{"season_number":2,"episode_number":3,"name":"Unknown","air_date":null},{"season_number":2,"episode_number":4,"name":"Invalid date","air_date":"2020-99-99"}]}"#,
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = vec![];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut b = [0];
+                    stream.read_exact(&mut b).unwrap();
+                    request.push(b[0]);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let catalog =
+            episode_catalog_at(&base, 42, "private-token", "en-US", "2026-10-22", &cancel).unwrap();
+        assert_eq!(catalog[&1].len(), 3);
+        assert_eq!(
+            catalog[&2],
+            std::collections::BTreeMap::from([(1, "Return".into())])
+        );
+        let requests = server.join().unwrap();
+        for (request, path) in
+            requests
+                .iter()
+                .zip(["/tv/42?", "/tv/42/season/1?", "/tv/42/season/2?"])
+        {
+            assert!(request.starts_with(&format!("GET {path}language=en-US ")));
+            assert!(!request.lines().next().unwrap().contains("private-token"));
+            assert!(
+                request
+                    .to_lowercase()
+                    .contains("authorization: bearer private-token")
+            );
+        }
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            episode_catalog_at(&base, 42, "private-token", "en-US", "2026-10-22", &cancel)
+                .unwrap_err(),
+            "Episode check cancelled"
+        );
+        for (seconds, date) in [
+            (0, "1970-01-01"),
+            (951782400, "2000-02-29"),
+            (1709164800, "2024-02-29"),
+            (1709251200, "2024-03-01"),
+        ] {
+            assert_eq!(utc_date(seconds), date);
+        }
+    }
 
     #[test]
     fn season_titles_use_header_auth_and_reject_invalid_responses() {

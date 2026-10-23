@@ -290,6 +290,7 @@ fn movie_organization_refuses_existing_destinations_and_keeps_series_layout() {
     fs::write(&original, b"movie").unwrap();
     let episode = f.root.join("Series/Show/Season 01/release.S01E01.mkv");
     fs::write(&episode, b"episode").unwrap();
+    fs::write(episode.with_extension("nfo"), "<episodedetails><title>Pilot</title><season>1</season><episode>1</episode></episodedetails>").unwrap();
     let mut db = f.db();
     let movie = f.matched(&mut db, Category::Movies, &original);
     let target_dir = f.root.join("Movies/2024 - A_ Title_");
@@ -359,6 +360,38 @@ fn rename_sidecars_preserve_matches_and_undo_survives_restart() {
     assert_eq!(db.videos().unwrap()[0].path, original);
     assert!(db.videos().unwrap()[0].tmdb.is_some());
     assert!(file_ops::last_undo(&db).unwrap().is_none());
+}
+
+#[test]
+fn episode_rename_restores_title_from_a_numbered_sibling_nfo() {
+    let f = Fixture::new();
+    let folder = f.root.join("Series/Show/Season 01");
+    let original = folder.join("The Rehearsal - S01E01.mp4");
+    fs::write(&original, b"episode video").unwrap();
+    fs::write(folder.join("The Rehearsal - S01E01 - Orange Juice, No Pulp.nfo"),
+        "<episodedetails><title>Orange Juice, No Pulp</title><season>1</season><episode>1</episode></episodedetails>").unwrap();
+    let mut db = f.db();
+    let mut video = f.matched(&mut db, Category::Series, &original);
+    video.tmdb.as_mut().unwrap().title = "The Rehearsal".into();
+    let name = file_ops::suggested_name(&video);
+    let plan = file_ops::organize_preview(&f.sources(), &[(video, name)]).unwrap();
+    assert!(
+        plan.moves.iter().any(|m| m.video
+            && m.to.file_name().unwrap() == "The Rehearsal - S01E01 - Orange Juice, No Pulp.mp4"),
+        "The video must receive the same episode title as its existing NFO; planned moves: {:?}",
+        plan.moves
+    );
+    let id = file_ops::apply(&mut db, &plan).unwrap();
+    let renamed = folder.join("The Rehearsal - S01E01 - Orange Juice, No Pulp.mp4");
+    assert_eq!(fs::read(&renamed).unwrap(), b"episode video");
+    assert!(!original.exists());
+    assert!(
+        folder
+            .join("The Rehearsal - S01E01 - Orange Juice, No Pulp.nfo")
+            .exists()
+    );
+    file_ops::undo(&mut db, id, &plan).unwrap();
+    assert!(original.exists() && !renamed.exists());
 }
 
 #[test]

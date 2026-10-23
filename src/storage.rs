@@ -161,6 +161,24 @@ impl LibraryDb {
     pub fn sources(&self) -> DbResult<Vec<Source>> {
         read_sources(&self.connection)
     }
+    pub fn show_missing_episodes(&self) -> DbResult<bool> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM settings WHERE key='show_missing_episodes'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .as_deref()
+            == Some("true"))
+    }
+
+    pub fn set_show_missing_episodes(&mut self, enabled: bool) -> DbResult<()> {
+        self.connection.execute("INSERT INTO settings(key,value) VALUES ('show_missing_episodes',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [if enabled {"true"} else {"false"}])?;
+        Ok(())
+    }
+
     pub fn videos(&self) -> DbResult<Vec<Video>> {
         let mut videos = read_videos(&self.connection)?;
         let folders: std::collections::HashSet<_> = videos
@@ -423,7 +441,7 @@ fn read_sources(connection: &Connection) -> DbResult<Vec<Source>> {
 fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     let mut stmt = connection.prepare(
         "SELECT v.category, v.path, v.relative_path, v.bytes,
-        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json,v.is_folder FROM videos v
+        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json,v.is_folder,date(v.first_seen_at,'unixepoch','localtime') FROM videos v
         LEFT JOIN tmdb_matches m ON m.category=v.category AND m.path=v.path
         LEFT JOIN scraped_metadata s ON s.category=v.category AND s.path=v.path
         ORDER BY v.category, v.path COLLATE NOCASE",
@@ -431,6 +449,7 @@ fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     Ok(stmt
         .query_map([], |r| {
             Ok(Video {
+                added_date: r.get(11)?,
                 is_folder: r.get(10)?,
                 artwork: Default::default(),
                 category: category(r)?,

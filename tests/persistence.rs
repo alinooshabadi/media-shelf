@@ -271,6 +271,7 @@ fn failed_updates_roll_back_and_stale_scans_are_rejected() {
     let mut report = ScanReport::default();
     for (name, bytes) in [("good.mp4", 10), ("overflow.mp4", u64::MAX)] {
         report.videos.push(Video {
+            added_date: None,
             is_folder: false,
             artwork: Default::default(),
             category: Category::Movies,
@@ -292,4 +293,44 @@ fn failed_updates_roll_back_and_stale_scans_are_rejected() {
     db.set_sources(&f.sources()[..1]).unwrap();
     assert!(db.apply_scan(&f.sources(), &f.scan()).is_err());
     assert_eq!(db.videos().unwrap().len(), 1);
+}
+
+#[test]
+fn added_date_and_missing_episode_preference_survive_reopen_and_rescan() {
+    let f = Fixture::new();
+    fs::write(f.root.join("Movies/film.mp4"), b"video").unwrap();
+    let mut db = LibraryDb::open(&f.db()).unwrap();
+    assert!(!db.show_missing_episodes().unwrap());
+    db.set_show_missing_episodes(true).unwrap();
+    db.set_sources(&f.sources()).unwrap();
+    db.apply_scan(&f.sources(), &f.scan()).unwrap();
+    let sql = rusqlite::Connection::open(f.db()).unwrap();
+    sql.execute("UPDATE videos SET first_seen_at=946728000", [])
+        .unwrap();
+    let expected: String = sql
+        .query_row(
+            "SELECT date(first_seen_at,'unixepoch','localtime') FROM videos",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    drop(db);
+    let mut db = LibraryDb::open(&f.db()).unwrap();
+    assert!(db.show_missing_episodes().unwrap());
+    db.apply_scan(&f.sources(), &f.scan()).unwrap();
+    assert_eq!(db.videos().unwrap()[0].added_date.as_ref(), Some(&expected));
+    assert_eq!(
+        sql.query_row("SELECT first_seen_at FROM videos", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        946728000
+    );
+    db.set_show_missing_episodes(false).unwrap();
+    drop(db);
+    assert!(
+        !LibraryDb::open(&f.db())
+            .unwrap()
+            .show_missing_episodes()
+            .unwrap()
+    );
 }

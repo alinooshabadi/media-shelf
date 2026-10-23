@@ -16,6 +16,19 @@ mod series;
 
 pub const QUARANTINE: &str = ".mediashelf-cleanup";
 
+/// All episode numbers contained in a recognized single or multi-episode filename.
+pub fn episode_numbers(path: &Path) -> Option<(u32, Vec<u32>)> {
+    series::numbers(path)
+}
+
+/// Local episode numbering and title, shared by the browser and organizer.
+pub fn episode_details(
+    path: &Path,
+    siblings: &[PathBuf],
+) -> DbResult<Option<(u32, u32, Option<String>)>> {
+    series::details(path, siblings)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileMove {
     pub from: PathBuf,
@@ -57,6 +70,9 @@ pub fn suggested_name(video: &Video) -> String {
         return original;
     };
     let title = sanitize_title(&matched.title);
+    if video.is_folder {
+        return original;
+    }
     let stem = match video.category {
         Category::Movies => {
             if matched.year() == "Unknown year" {
@@ -66,6 +82,9 @@ pub fn suggested_name(video: &Video) -> String {
             }
         }
         Category::Series => {
+            if let Ok(Some(name)) = series::name(video, |_| Ok(Default::default())) {
+                return name;
+            }
             let re =
                 regex::Regex::new(r"(?i)(s\d{1,3}e\d{1,3}(?:-?e\d{1,3})*|\b\d{1,3}x\d{1,3}\b)")
                     .unwrap();
@@ -88,6 +107,29 @@ pub fn suggested_name(video: &Video) -> String {
     format!(
         "{stem}.{}",
         video.path.extension().unwrap_or_default().to_string_lossy()
+    )
+}
+
+fn episode_titles(
+    video: &Video,
+    season: u32,
+) -> Result<std::collections::BTreeMap<u32, String>, String> {
+    let saved = crate::credentials::load(&crate::credentials::token_path())
+        .map_err(|_| "Could not load saved TMDB token")?;
+    let token = if saved.is_empty() {
+        std::env::var("TMDB_READ_ACCESS_TOKEN").unwrap_or_default()
+    } else {
+        saved
+    };
+    crate::metadata::episode_titles(
+        video
+            .tmdb
+            .as_ref()
+            .ok_or("Match this show before renaming")?
+            .id,
+        season,
+        &token,
+        "en-US",
     )
 }
 
@@ -130,7 +172,7 @@ pub fn rename_preview(
     rename_preview_inner(sources, requested, false)
 }
 
-/// Movie folders use Year - Title; series retain their existing folder layout.
+/// Apply the default movie and series organization, preserving matching sidecars.
 pub fn organize_preview(
     sources: &[Source],
     requested: &[(Video, String)],
@@ -157,26 +199,16 @@ fn rename_preview_inner(
                 return Err("Use organization to rename a show folder.".into());
             }
             series::append(&mut plan, &mut seen, video, |season| {
-                let saved = crate::credentials::load(&crate::credentials::token_path())
-                    .map_err(|_| "Could not load saved TMDB token")?;
-                let token = if saved.is_empty() {
-                    std::env::var("TMDB_READ_ACCESS_TOKEN").unwrap_or_default()
-                } else {
-                    saved
-                };
-                crate::metadata::episode_titles(
-                    video
-                        .tmdb
-                        .as_ref()
-                        .ok_or("Match this show before renaming")?
-                        .id,
-                    season,
-                    &token,
-                    "en-US",
-                )
+                episode_titles(video, season)
             })?;
             continue;
         }
+        let resolved = if folders && video.category == Category::Series {
+            series::name(video, |season| episode_titles(video, season))?
+        } else {
+            None
+        };
+        let name = resolved.as_deref().unwrap_or(name);
         validate_name(name)?;
         if Path::new(name).extension() != video.path.extension() {
             return Err("Keep the original video extension unchanged.".into());

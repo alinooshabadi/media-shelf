@@ -12,8 +12,8 @@ On macOS, open **Media Shelf.app** instead. In the app:
 1. Choose **Movies** or **TV shows**.
 2. Open **Data sources** and browse for a folder, or paste a folder path and click **Add**.
 3. The scan starts automatically. Movies are recursive; TV sources index only immediate show folders. Add more folders if needed.
-4. Filter by title/path. Select rows to view details; Ctrl-click (Command-click on Mac) selects multiple movies.
-5. Right-click a movie, TV show or episode for **Search & scrape** and **Rename**. Right-clicking a selected item keeps the multi-selection. Rename applies the default format immediately; selected items need a saved match or local NFO with title/year.
+4. Click a column header to sort; click again to reverse the order. **Added** is the date an item was first indexed and is preserved by rescans and renames. Filter by title/path. Expand a TV show to browse its seasons and numbered episodes. Click an episode to view its file details, or a season to select its episodes. Ctrl-click (Command-click on Mac) selects multiple items. Use **Refresh episodes** inside a show after external file changes.
+5. Right-click a movie or TV show for **Search & scrape** and **Rename**. With episodes selected, toolbar scrape and rename actions apply to their parent show. Right-clicking a selected item keeps the multi-selection. Rename applies the default format immediately; selected items need a saved match or local NFO with title/year.
 6. Click **Update sources** after adding files to your media folders.
 
 Folders and video records are saved to
@@ -117,9 +117,11 @@ A movie directly in a source root gets a new subfolder. A movie already in a fol
 gets the new folder beside its current folder, avoiding repeated nesting.
 **Rename & cleanup → Rename all matched files…** applies the defaults to matched
 files in the current category. Indexed series use `Show (Year)/Season N/Show - S01E01 - Episode title.ext`.
-Only Rename scans the selected show's episodes. Matching local NFO titles and
+Expanding a show or using Rename scans only that show's episodes. Matching local NFO titles and
 existing standard filenames take priority; missing episode titles are fetched
 from TMDB in English, once per season. Save your token in Settings first.
+Episode NFOs are matched by season and episode number, even when their filenames
+already include a title that is missing from the video filename.
 If a needed title cannot be loaded, no files move. Subtitles (including language
 suffixes), NFOs and thumbnails follow the episode names; other files are retained.
 Unrecognized and multi-episode filenames stay unchanged and are reported.
@@ -193,10 +195,12 @@ confirmation; it does not silently update every field.
 
 TV sources index only first-level show folders, without enumerating seasons or
 episodes. Existing episode metadata stays in the local database and the library
-shows one entry per show. A show scrape updates that entry and can write
+shows one top-level entry per show. Expanding a show loads only its episodes in the background, grouped by season with numeric ordering. Titles come from local episode NFOs or standard filenames; missing titles display as Episode N. A show scrape updates that entry and can write
 `tvshow.nfo`. Rename scans just the selected show and resolves episode titles;
-full episode plot scraping and missing-episode discovery are not implemented.
+full episode plot scraping is not implemented. Optional missing-episode display is described below.
 Put each show inside its own folder; flat episodes in the source root are not indexed.
+
+Enable **Settings → Show missing seasons and episodes** to compare expanded, matched shows with TMDB's aired episode catalog. The option defaults to off and is saved locally. Missing episodes and entirely missing seasons appear in the tree with a Missing label; future or undated episodes are excluded. These entries cannot be renamed or scraped as local files. The check runs in the background and requires a TMDB token. Shows with unreadable files or unrecognized episode numbering skip the comparison to avoid false missing entries. Use **Refresh episodes** to check again after adding files. Season and episode count columns show local counts; unloaded counts sort last without scanning other shows.
 
 The main detail pane contains **Overview**, **Cast & crew**, **Media files**, **Artwork**,
 and **Trailer** tabs. Rows show New, Matched or Scraped status. Hover over the status for metadata, artwork and NFO details.

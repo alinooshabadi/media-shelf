@@ -109,6 +109,7 @@ mod tests {
             ),
         ] {
             let video = Video {
+                added_date: None,
                 is_folder: false,
                 artwork: Default::default(),
                 category: Category::Movies,

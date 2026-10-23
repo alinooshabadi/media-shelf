@@ -2,6 +2,7 @@ use eframe::egui::{self, Color32, RichText};
 mod file_tools;
 mod library_view;
 mod matching;
+mod series_tree;
 mod theme;
 use media_shelf::storage::{LibraryDb, database_path};
 use media_shelf::{Category, ScanReport, Source, Video};
@@ -43,6 +44,7 @@ struct App {
     folder_input: String,
     filter: String,
     videos: Vec<Video>,
+    series_tree: series_tree::SeriesTree,
     warnings: Vec<String>,
     error: Option<String>,
     status: String,
@@ -56,7 +58,8 @@ struct App {
     detail_tab: usize,
     sources_open: bool,
     filter_mode: usize,
-    sort: usize,
+    sort: library_view::SortColumn,
+    sort_descending: bool,
 }
 
 impl App {
@@ -96,12 +99,18 @@ impl App {
             .map(|v| v.category)
             .unwrap_or(Category::Movies);
         let selection = selected.iter().cloned().collect();
+        let mut tmdb_ui = matching::TmdbUi::new();
+        tmdb_ui.show_missing_episodes = database
+            .as_ref()
+            .and_then(|db| db.show_missing_episodes().ok())
+            .unwrap_or(false);
         Self {
             sources,
             category,
             folder_input: String::new(),
             filter: String::new(),
             videos,
+            series_tree: Default::default(),
             warnings: vec![],
             error,
             status,
@@ -109,13 +118,14 @@ impl App {
             cancel: Arc::new(AtomicBool::new(false)),
             database,
             selected,
-            tmdb_ui: matching::TmdbUi::new(),
+            tmdb_ui,
             file_tools: file_tools::FileTools::new(),
             selection,
             detail_tab: 0,
             sources_open: false,
             filter_mode: 0,
-            sort: 0,
+            sort: library_view::SortColumn::Title,
+            sort_descending: false,
         }
     }
 
@@ -173,6 +183,7 @@ impl App {
         if self.receiver.is_some() || self.database.is_none() {
             return;
         }
+        self.series_tree = Default::default();
         self.warnings.clear();
         self.selected = None;
         self.selection.clear();

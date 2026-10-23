@@ -26,6 +26,7 @@ mod tests {
                 overview: "Example plot".into(),
             };
             let video = Video {
+                added_date: None,
                 is_folder: false,
                 artwork: Default::default(),
                 category,
@@ -100,6 +101,7 @@ pub struct TmdbUi {
     token: String,
     token_status: Option<String>,
     pub settings_open: bool,
+    pub show_missing_episodes: bool,
     language: String,
     options: ScrapeOptions,
     dialog: Option<SearchDialog>,
@@ -234,6 +236,7 @@ impl TmdbUi {
             },
             token_status,
             settings_open: false,
+            show_missing_episodes: false,
             language: "en-US".into(),
             options: ScrapeOptions::default(),
             dialog: None,
@@ -267,7 +270,7 @@ impl TmdbUi {
         }
     }
     pub fn draw(&mut self, ctx: &egui::Context, _db: Option<&mut LibraryDb>, locked: bool) -> bool {
-        self.settings(ctx);
+        self.settings(ctx, _db);
         let Some(dialog) = &mut self.dialog else {
             return false;
         };
@@ -467,9 +470,24 @@ impl TmdbUi {
         }
         reload
     }
-    fn settings(&mut self, ctx: &egui::Context) {
+    pub fn browsing_credentials(&self) -> (String, String) {
+        (self.token.clone(), self.language.clone())
+    }
+
+    fn settings(&mut self, ctx: &egui::Context, mut db: Option<&mut LibraryDb>) {
         if self.settings_open {
             egui::Window::new("TMDB settings & credits").open(&mut self.settings_open).default_width(500.0).show(ctx,|ui|{
+            let previous = self.show_missing_episodes;
+            if ui.add_enabled(db.is_some(),egui::Checkbox::new(&mut self.show_missing_episodes,"Show missing seasons and episodes")).changed() {
+                if let Some(db) = db.as_deref_mut() {
+                    if let Err(e) = db.set_show_missing_episodes(self.show_missing_episodes) {
+                        self.show_missing_episodes = previous;
+                        self.token_status = Some(format!("Could not save setting: {e}"));
+                    }
+                }
+            }
+            ui.weak("Compare expanded, matched shows with aired episodes on TMDB. Requires a token; missing entries are display only.");
+            ui.separator();
             ui.label("TMDB API Read Access Token");ui.add(egui::TextEdit::singleline(&mut self.token).password(true).desired_width(f32::INFINITY));ui.horizontal(|ui| {
     if ui.button("Save token").clicked() {
         self.token_status = Some(match media_shelf::credentials::save(&media_shelf::credentials::token_path(), &self.token) {

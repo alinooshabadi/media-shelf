@@ -38,6 +38,9 @@ pub struct Source {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Video {
+    /// First library scan date in local time (YYYY-MM-DD); absent on unsaved scan results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_date: Option<String>,
     #[serde(default)]
     pub is_folder: bool,
     #[serde(default)]
@@ -167,6 +170,7 @@ fn scan_inner(
                 }
             };
             report.videos.push(Video {
+                added_date: None,
                 is_folder: folders_only,
                 artwork: Default::default(),
                 category: source.category,
