@@ -589,7 +589,7 @@ impl App {
     }
     fn sort_header(&mut self, ui: &mut egui::Ui, column: SortColumn, label: &str) {
         let text = if self.sort == column {
-            format!("{label} {}", if self.sort_descending { "↓" } else { "↑" })
+            format!("{label} {}", if self.sort_descending { "v" } else { "^" })
         } else {
             label.to_string()
         };
@@ -754,7 +754,7 @@ impl App {
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(egui_extras::Column::remainder().at_least(120.0))
             .column(egui_extras::Column::initial(38.0))
-            .column(egui_extras::Column::initial(44.0))
+            .column(egui_extras::Column::initial(60.0))
             .column(egui_extras::Column::exact(66.0))
             .column(egui_extras::Column::exact(82.0))
             .header(36.0, |mut row| {
