@@ -542,7 +542,11 @@ pub fn video_poster(ui: &mut egui::Ui, video: &Video, fanart: bool, size: egui::
     let local = if fanart {
         video.artwork.fanart.as_ref()
     } else {
-        video.artwork.poster.as_ref()
+        video
+            .artwork
+            .thumb
+            .as_ref()
+            .or(video.artwork.poster.as_ref())
     };
     if let Some(path) = local {
         ui.add(

@@ -1,12 +1,61 @@
 //! Discover existing artwork without changing files or creating provider matches.
 use crate::{Category, Source, Video};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Artwork {
     pub poster: Option<PathBuf>,
     pub fanart: Option<PathBuf>,
+    #[serde(default)]
+    pub thumb: Option<PathBuf>,
+}
+
+/// Reuse the scanned directory entries; never traverse the NAS for a thumbnail.
+pub fn episode_thumb(path: &Path, files: &[PathBuf]) -> Option<PathBuf> {
+    let images: Vec<_> = files
+        .iter()
+        .filter(|p| {
+            p.parent() == path.parent()
+                && p.extension().is_some_and(|e| {
+                    ["jpg", "jpeg", "png", "webp"]
+                        .iter()
+                        .any(|ext| e.eq_ignore_ascii_case(ext))
+                })
+        })
+        .collect();
+    let stem = path.file_stem()?.to_string_lossy();
+    for name in [format!("{stem}-thumb"), format!("{stem}.thumb")] {
+        if let Some(image) = images
+            .iter()
+            .find(|p| p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(&name)))
+        {
+            return Some((*image).clone());
+        }
+    }
+    if let Some(numbers) = crate::file_ops::episode_numbers(path) {
+        let matching: Vec<_> = images
+            .iter()
+            .filter(|p| {
+                p.file_stem()
+                    .is_some_and(|s| s.to_string_lossy().to_lowercase().ends_with("-thumb"))
+                    && crate::file_ops::episode_numbers(p).as_ref() == Some(&numbers)
+            })
+            .collect();
+        if matching.len() == 1 {
+            return Some((**matching[0]).clone());
+        }
+    }
+    images
+        .iter()
+        .find(|p| {
+            p.file_stem()
+                .is_some_and(|s| s.eq_ignore_ascii_case("thumb"))
+        })
+        .map(|p| (*p).clone())
 }
 
 pub fn attach(videos: &mut [Video], sources: &[Source]) {
@@ -50,6 +99,10 @@ pub(crate) fn attach_items<'a>(videos: impl Iterator<Item = &'a mut Video>, sour
                     .map(|e| (e.file_name().to_string_lossy().to_lowercase(), e.path()))
                     .collect()
             });
+            if video.category == Category::Series && !video.is_folder && artwork.thumb.is_none() {
+                artwork.thumb =
+                    episode_thumb(&video.path, &files.values().cloned().collect::<Vec<_>>());
+            }
             for (target, names) in [
                 (
                     &mut artwork.poster,
@@ -87,6 +140,30 @@ pub(crate) fn attach_items<'a>(videos: impl Iterator<Item = &'a mut Video>, sour
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn episode_thumbs_match_numbered_sidecars_and_prefer_exact_names() {
+        let video = PathBuf::from("Show/Season 1/Show - S01E01.mp4");
+        let numbered = PathBuf::from("Show/Season 1/Show - S01E01 - Pilot-thumb.JPG");
+        let generic = PathBuf::from("Show/Season 1/thumb.jpg");
+        let exact = PathBuf::from("Show/Season 1/Show - S01E01-thumb.png");
+        let mut files = vec![
+            generic.clone(),
+            PathBuf::from("Other/Show - S01E01-thumb.jpg"),
+            PathBuf::from("Show/Season 1/Show - S01E02 - Wrong-thumb.jpg"),
+            PathBuf::from("Show/Season 1/Show - S01E01 - Wrong-poster.jpg"),
+            numbered.clone(),
+        ];
+        assert_eq!(episode_thumb(&video, &files), Some(numbered.clone()));
+        files.push(exact.clone());
+        assert_eq!(episode_thumb(&video, &files), Some(exact.clone()));
+        files.retain(|p| p != &exact && p != &numbered);
+        assert_eq!(episode_thumb(&video, &files), Some(generic.clone()));
+        files.retain(|p| p != &generic);
+        assert_eq!(episode_thumb(&video, &files), None);
+        let old: Artwork = serde_json::from_str(r#"{"poster":null,"fanart":null}"#).unwrap();
+        assert!(old.thumb.is_none());
+    }
+
     #[test]
     fn filename_specific_artwork_wins_and_tv_show_art_is_discovered() {
         let dir = tempfile::tempdir().unwrap();

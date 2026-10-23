@@ -66,6 +66,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             database: None,
             selected: Some(video.path.clone()),
+            selected_season: None,
             tmdb_ui: matching::TmdbUi::new(),
             file_tools: file_tools::FileTools::new(),
             selection: [video.path].into_iter().collect(),
@@ -75,6 +76,34 @@ mod tests {
             sort: SortColumn::Title,
             sort_descending: false,
         }
+    }
+
+    #[test]
+    fn existing_episode_title_lookup_is_independent_of_missing_episode_display() {
+        let show = Video {
+            added_date: None,
+            is_folder: true,
+            category: Category::Series,
+            path: "/shows/The Rehearsal (2022)".into(),
+            relative_path: "The Rehearsal (2022)".into(),
+            bytes: 0,
+            artwork: Default::default(),
+            metadata: None,
+            tmdb: Some(media_shelf::tmdb::TmdbMatch {
+                category: Category::Series,
+                id: 1,
+                title: "The Rehearsal".into(),
+                original_title: "The Rehearsal".into(),
+                release_date: Some("2022-07-15".into()),
+                overview: String::new(),
+            }),
+        };
+        let mut app = fixture(show.clone());
+        app.tmdb_ui.show_missing_episodes = false;
+        assert!(
+            app.episode_lookup(&show).is_some(),
+            "Existing episode titles must load even when missing-episode display is disabled"
+        );
     }
 
     #[test]
@@ -134,6 +163,8 @@ mod tests {
         let episode = series_tree::Episode {
             video: a.clone(),
             number: Some(1),
+            needs_title: false,
+            details: Default::default(),
             label: "1. Pilot".into(),
         };
         let mut one = series_tree::Show::default();
@@ -160,8 +191,12 @@ mod tests {
         std::fs::create_dir_all(&season).unwrap();
         let path = season.join("Show - S01E01.mp4");
         std::fs::write(&path, b"video").unwrap();
+        let thumb = season.join("Show - S01E01 - Pilot-thumb.jpg");
+        image::RgbImage::from_pixel(16, 9, image::Rgb([40, 80, 120]))
+            .save(&thumb)
+            .unwrap();
         std::fs::write(season.join("Show - S01E01 - Pilot.nfo"),
-            "<episodedetails><title>Pilot</title><season>1</season><episode>1</episode></episodedetails>").unwrap();
+            "<episodedetails><title>Pilot</title><season>1</season><episode>1</episode><aired>2022-07-15</aired><rating>7.8</rating></episodedetails>").unwrap();
         let video = Video {
             added_date: None,
             is_folder: true,
@@ -177,6 +212,16 @@ mod tests {
         app.series_tree
             .shows
             .insert(folder.clone(), series_tree::load(&folder, &[]));
+        assert_eq!(
+            app.series_tree
+                .episode(&path)
+                .unwrap()
+                .video
+                .artwork
+                .thumb
+                .as_ref(),
+            Some(&thumb)
+        );
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let render = |app: &mut App, events: Vec<egui::Event>| {
@@ -202,15 +247,103 @@ mod tests {
             )
         };
         let mut episode_pos = None;
+        let mut season_pos = None;
         for _ in 0..3 {
             for shape in render(&mut app, vec![]).shapes {
                 if let egui::Shape::Text(text) = shape.shape {
+                    if text.galley.text().starts_with("Season 1") {
+                        season_pos = Some(text.pos + text.galley.size() / 2.0);
+                    }
                     if text.galley.text() == "1. Pilot" {
                         episode_pos = Some(text.pos + text.galley.size() / 2.0);
                     }
                 }
             }
         }
+        let season_pos = season_pos.expect("Expanded tree must display the season header");
+        for pressed in [true, false] {
+            render(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(season_pos),
+                    egui::Event::PointerButton {
+                        pos: season_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            );
+        }
+        assert_eq!(app.selected_season, Some((folder.clone(), 1)));
+        assert_eq!(app.selected_videos(false)[0].path, folder);
+        app.sources.push(Source {
+            category: Category::Series,
+            path: temp.path().to_path_buf(),
+        });
+        app.videos[0].is_folder = false;
+        app.videos[0].path = path.clone();
+        assert_eq!(
+            app.selected_videos(false)[0].path,
+            path,
+            "Season actions also support a saved episode index"
+        );
+        app.videos[0] = video.clone();
+        let output = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.detail_view(ui));
+        });
+        for label in [
+            "Episode",
+            "Title",
+            "Aired",
+            "Rating",
+            "Pilot",
+            "2022-07-15",
+            "7.8",
+        ] {
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == label)),
+                "Missing {label}"
+            );
+        }
+        let title_pos = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Pilot" => {
+                    Some(t.pos + t.galley.size() / 2.0)
+                }
+                _ => None,
+            })
+            .unwrap();
+        for pressed in [true, false] {
+            let _ = ctx.run(
+                egui::RawInput {
+                    events: vec![
+                        egui::Event::PointerMoved(title_pos),
+                        egui::Event::PointerButton {
+                            pos: title_pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.detail_view(ui));
+                },
+            );
+        }
+        assert_eq!(app.selected, Some(path.clone()));
+        assert!(
+            app.selected_season.is_none(),
+            "Clicking the table title opens episode details"
+        );
+        render(&mut app, vec![]);
         let pos = episode_pos.expect("Expanded tree must display the NFO episode title");
         render(
             &mut app,
@@ -234,6 +367,7 @@ mod tests {
             }],
         );
         assert_eq!(app.selected, Some(path.clone()));
+        assert!(app.selected_season.is_none());
         assert_eq!(
             app.detail_tab, 2,
             "Selecting an episode opens its media file details"
@@ -336,6 +470,7 @@ mod tests {
 enum ItemAction {
     Scrape,
     Rename,
+    ReloadLocal,
 }
 
 fn item_menu(response: &egui::Response, locked: bool) -> Option<ItemAction> {
@@ -344,6 +479,10 @@ fn item_menu(response: &egui::Response, locked: bool) -> Option<ItemAction> {
         ui.add_enabled_ui(!locked, |ui| {
             if ui.button("Search & scrape…").clicked() {
                 action = Some(ItemAction::Scrape);
+                ui.close();
+            }
+            if ui.button("Reload local metadata").clicked() {
+                action = Some(ItemAction::ReloadLocal);
                 ui.close();
             }
             if ui.button("Rename…").clicked() {
@@ -355,17 +494,21 @@ fn item_menu(response: &egui::Response, locked: bool) -> Option<ItemAction> {
     action
 }
 
-fn title(v: &Video) -> String {
-    v.tmdb.as_ref().map(|m| m.title.clone()).unwrap_or_else(|| {
-        if v.category == Category::Movies {
-            return media_shelf::identification::local_identity(v).0;
-        }
-        v.path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    })
+pub(super) fn title(v: &Video) -> String {
+    v.tmdb
+        .as_ref()
+        .map(|m| m.title.clone())
+        .or_else(|| v.metadata.as_ref().map(|m| m.identity.title.clone()))
+        .unwrap_or_else(|| {
+            if v.category == Category::Movies {
+                return media_shelf::identification::local_identity(v).0;
+            }
+            v.path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
 }
 fn year(v: &Video) -> String {
     v.metadata
@@ -411,11 +554,13 @@ impl App {
             self.selection.extend(paths.iter().cloned());
         }
         self.selected = paths.first().cloned();
+        self.selected_season = None;
         self.detail_tab = 0;
         if self.item_actions_locked() {
             return;
         }
         match action {
+            Some(ItemAction::ReloadLocal) => self.reload_local_metadata(),
             Some(ItemAction::Scrape) => self.tmdb_ui.open_many(self.selected_videos(false), false),
             Some(ItemAction::Rename) => {
                 let videos: Vec<_> = self
@@ -434,7 +579,7 @@ impl App {
             None => {}
         }
     }
-    fn selected_videos(&self, unscraped: bool) -> Vec<Video> {
+    pub(super) fn selected_videos(&self, unscraped: bool) -> Vec<Video> {
         let mut groups = HashSet::new();
         self.videos
             .iter()
@@ -454,7 +599,8 @@ impl App {
             .cloned()
             .collect()
     }
-    fn select(&mut self, path: PathBuf, additive: bool) {
+    pub(super) fn select(&mut self, path: PathBuf, additive: bool) {
+        self.selected_season = None;
         if let Some(video) = self
             .videos
             .iter_mut()
@@ -734,10 +880,12 @@ impl App {
                     .map(|i| self.videos[*i].path.clone())
                     .collect();
                 self.selected = entries.first().map(|i| self.videos[*i].path.clone());
+                self.selected_season = None;
             }
             if ui.small_button("Clear selection").clicked() {
                 self.selection.clear();
                 self.selected = None;
+                self.selected_season = None;
             }
         });
         if self.category == Category::Series {
@@ -858,6 +1006,13 @@ impl App {
             self.apply_item_context(paths, action);
         }
     }
+    fn episode_lookup(&self, show: &Video) -> Option<(i64, String, String)> {
+        show.tmdb.as_ref().map(|m| {
+            let (token, language) = self.tmdb_ui.browsing_credentials();
+            (m.id, token, language)
+        })
+    }
+
     fn indexed_show(&mut self, ui: &mut egui::Ui, show: Video, name: &str) {
         let folder = &show.path;
         let counts = self
@@ -870,14 +1025,7 @@ impl App {
         let mut retry = false;
         let mut context = None;
         let locked = self.item_actions_locked();
-        let catalog = if self.tmdb_ui.show_missing_episodes {
-            show.tmdb.as_ref().map(|m| {
-                let (token, language) = self.tmdb_ui.browsing_credentials();
-                (m.id, token, language)
-            })
-        } else {
-            None
-        };
+        let catalog = self.episode_lookup(&show);
         let id = ui.make_persistent_id(("indexed_show", folder));
         let (_, header, _) =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
@@ -912,8 +1060,12 @@ impl App {
                     response
                 })
                 .body(|ui| {
-                    self.series_tree
-                        .request(folder, &self.sources, catalog.clone());
+                    self.series_tree.request(
+                        folder,
+                        &self.sources,
+                        catalog.clone(),
+                        self.tmdb_ui.show_missing_episodes,
+                    );
                     let Some(loaded) = self.series_tree.shows.get(folder) else {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -924,10 +1076,14 @@ impl App {
                     if loaded.count() == 0 && loaded.warnings.is_empty() {
                         ui.weak("No video files found.");
                     }
-                    if loaded.checking_missing {
+                    if loaded.checking_metadata {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.weak("Checking missing episodes on TMDB…");
+                            ui.weak(if self.tmdb_ui.show_missing_episodes {
+                                "Checking missing episodes on TMDB…"
+                            } else {
+                                "Loading episode details from TMDB…"
+                            });
                         });
                     } else if self.tmdb_ui.show_missing_episodes && show.tmdb.is_none() {
                         ui.weak("Match this show to check for missing seasons and episodes.");
@@ -945,10 +1101,9 @@ impl App {
                         } else {
                             name
                         };
-                        let selected = !episodes.is_empty()
-                            && episodes
-                                .iter()
-                                .all(|e| self.selection.contains(&e.video.path));
+                        let selected = season.is_some_and(|n| {
+                            self.selected_season.as_ref() == Some(&(folder.clone(), n))
+                        });
                         let id = ui.make_persistent_id((folder, season));
                         let (_, header, _) =
                             egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -1002,14 +1157,10 @@ impl App {
                                     }
                                 }
                             });
-                        if header.inner.clicked() && !episodes.is_empty() {
-                            season_click = Some((
-                                episodes
-                                    .iter()
-                                    .map(|e| e.video.path.clone())
-                                    .collect::<Vec<_>>(),
-                                ui.input(|i| i.modifiers.ctrl || i.modifiers.command),
-                            ));
+                        if header.inner.clicked() {
+                            if let Some(season) = season {
+                                season_click = Some(*season);
+                            }
                         }
                     }
                     if !loaded.warnings.is_empty() {
@@ -1033,16 +1184,15 @@ impl App {
         }
         if retry {
             self.series_tree.shows.remove(folder);
-            self.series_tree
-                .request(folder, &self.sources, catalog.clone());
+            self.series_tree.request(
+                folder,
+                &self.sources,
+                catalog.clone(),
+                self.tmdb_ui.show_missing_episodes,
+            );
         }
-        if let Some((paths, additive)) = season_click {
-            if !additive {
-                self.selection.clear();
-            }
-            self.selected = paths.first().cloned();
-            self.selection.extend(paths);
-            self.detail_tab = 2;
+        if let Some(season) = season_click {
+            self.select_season(folder.clone(), season);
         }
         if let Some((path, additive)) = click {
             self.select(path, additive);
@@ -1055,7 +1205,11 @@ impl App {
 
     // Show-level actions include selected descendants without adding episodes to the saved index.
     fn library_item_selected(&self, video: &Video) -> bool {
-        self.selection.contains(&video.path)
+        (video.category == Category::Series
+            && self.selected_season.as_ref().is_some_and(|(folder, _)| {
+                metadata::series_folder(video, &self.sources).as_ref() == Some(folder)
+            }))
+            || self.selection.contains(&video.path)
             || self.selected.as_ref() == Some(&video.path)
             || (video.is_folder
                 && self
@@ -1080,6 +1234,7 @@ impl App {
         groups.sort_by(|(_, a), (_, b)| self.compare_items(&self.videos[a[0]], &self.videos[b[0]]));
         let mut click = None;
         let mut show_click = None;
+        let mut season_click = None;
         let mut context = None;
         let locked = self.item_actions_locked();
         ui.horizontal(|ui| {
@@ -1156,7 +1311,13 @@ impl App {
                                     seasons.entry(season).or_default().push(*i);
                                 }
                                 for (season, files) in seasons {
-                                    egui::CollapsingHeader::new(season)
+                                    let season_number = files.iter().find_map(|i| {
+                                        media_shelf::file_ops::episode_numbers(
+                                            &self.videos[*i].path,
+                                        )
+                                        .map(|(s, _)| s)
+                                    });
+                                    let season_header = egui::CollapsingHeader::new(season)
                                         .id_salt((&folder, &files))
                                         .default_open(true)
                                         .show(ui, |ui| {
@@ -1181,6 +1342,11 @@ impl App {
                                                 }
                                             }
                                         });
+                                    if season_header.header_response.clicked() {
+                                        if let Some(n) = season_number {
+                                            season_click = Some((folder.clone(), n, items[0]));
+                                        }
+                                    }
                                 }
                             });
                     if header.header_response.clicked() {
@@ -1201,11 +1367,22 @@ impl App {
                     }
                 }
             });
+        if let Some((folder, season, index)) = season_click {
+            let lookup = self.episode_lookup(&self.videos[index]);
+            self.series_tree.request(
+                &folder,
+                &self.sources,
+                lookup,
+                self.tmdb_ui.show_missing_episodes,
+            );
+            self.select_season(folder, season);
+        }
         if let Some((paths, additive)) = show_click {
             if !additive {
                 self.selection.clear();
             }
             self.selected = paths.first().cloned();
+            self.selected_season = None;
             self.selection.extend(paths);
             self.detail_tab = 0;
         }
@@ -1217,6 +1394,10 @@ impl App {
         }
     }
     fn detail_view(&mut self, ui: &mut egui::Ui) {
+        if let Some((folder, season)) = self.selected_season.clone() {
+            self.season_view(ui, &folder, season);
+            return;
+        }
         let Some(video) = self
             .selected
             .as_ref()
@@ -1292,6 +1473,16 @@ impl App {
                             }
                             return;
                         }
+                        if video.artwork.thumb.is_some() {
+                            let width = ui.available_width().min(480.0);
+                            matching::video_poster(
+                                ui,
+                                &video,
+                                false,
+                                egui::vec2(width, width * 9.0 / 16.0),
+                            );
+                            ui.add_space(12.0);
+                        }
                         ui.label(episode_label(&video));
                         ui.horizontal(|ui| {
                             theme::badge(ui, &size(video.bytes));
@@ -1334,8 +1525,24 @@ impl App {
                         }
                     }
                     3 => {
-                        ui.heading("Poster");
-                        if !matching::video_poster(ui, &video, false, egui::vec2(220.0, 330.0)) {
+                        ui.heading(if video.artwork.thumb.is_some() {
+                            "Episode thumbnail"
+                        } else {
+                            "Poster"
+                        });
+                        if !matching::video_poster(
+                            ui,
+                            &video,
+                            false,
+                            if video.artwork.thumb.is_some() {
+                                egui::vec2(
+                                    480.0_f32.min(ui.available_width()),
+                                    270.0_f32.min(ui.available_width() * 9.0 / 16.0),
+                                )
+                            } else {
+                                egui::vec2(220.0, 330.0)
+                            },
+                        ) {
                             ui.weak("No poster found.");
                         }
                         ui.add_space(20.0);
@@ -1357,17 +1564,20 @@ impl App {
                     }
                     _ => {
                         let poster_width = (ui.available_width() * 0.30).clamp(150.0, 235.0);
+                        let poster_size = egui::vec2(
+                            poster_width,
+                            if video.artwork.thumb.is_some() {
+                                poster_width * 9.0 / 16.0
+                            } else {
+                                poster_width * 1.5
+                            },
+                        );
                         ui.horizontal_top(|ui| {
                             ui.allocate_ui_with_layout(
-                                egui::vec2(poster_width, poster_width * 1.5),
+                                poster_size,
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
-                                    if !matching::video_poster(
-                                        ui,
-                                        &video,
-                                        false,
-                                        egui::vec2(poster_width, poster_width * 1.5),
-                                    ) {
+                                    if !matching::video_poster(ui, &video, false, poster_size) {
                                         egui::Frame::new()
                                             .fill(theme::CARD)
                                             .corner_radius(10)
@@ -1672,6 +1882,7 @@ impl eframe::App for App {
                             self.sort_descending = false;
                             self.selection.clear();
                             self.selected = None;
+                            self.selected_season = None;
                         }
                     }
                 });
@@ -1732,6 +1943,7 @@ impl eframe::App for App {
         let files_changed = self.file_tools.draw(ctx);
         if files_changed {
             self.selected = None;
+            self.selected_season = None;
             self.selection.clear();
         }
         if (scrape_changed || files_changed)

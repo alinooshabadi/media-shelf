@@ -296,7 +296,7 @@ fn failed_updates_roll_back_and_stale_scans_are_rejected() {
 }
 
 #[test]
-fn added_date_and_missing_episode_preference_survive_reopen_and_rescan() {
+fn added_date_uses_folder_modification_and_missing_preference_survives_rescan() {
     let f = Fixture::new();
     fs::write(f.root.join("Movies/film.mp4"), b"video").unwrap();
     let mut db = LibraryDb::open(&f.db()).unwrap();
@@ -307,12 +307,19 @@ fn added_date_and_missing_episode_preference_survive_reopen_and_rescan() {
     let sql = rusqlite::Connection::open(f.db()).unwrap();
     sql.execute("UPDATE videos SET first_seen_at=946728000", [])
         .unwrap();
-    let expected: String = sql
-        .query_row(
-            "SELECT date(first_seen_at,'unixepoch','localtime') FROM videos",
-            [],
-            |r| r.get(0),
+    let folder = f.root.join("Movies");
+    open_folder(&folder)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
+            ),
         )
+        .unwrap();
+    let expected: String = sql
+        .query_row("SELECT date(1600000000,'unixepoch','localtime')", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     drop(db);
     let mut db = LibraryDb::open(&f.db()).unwrap();
@@ -325,6 +332,22 @@ fn added_date_and_missing_episode_preference_survive_reopen_and_rescan() {
             .unwrap(),
         946728000
     );
+    open_folder(&folder)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+            ),
+        )
+        .unwrap();
+    let changed: String = sql
+        .query_row("SELECT date(1700000000,'unixepoch','localtime')", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(db.videos().unwrap()[0].added_date.as_ref(), Some(&changed));
+    fs::remove_dir_all(&folder).unwrap();
+    assert!(db.videos().unwrap()[0].added_date.is_none());
     db.set_show_missing_episodes(false).unwrap();
     drop(db);
     assert!(
@@ -333,4 +356,46 @@ fn added_date_and_missing_episode_preference_survive_reopen_and_rescan() {
             .show_missing_episodes()
             .unwrap()
     );
+}
+
+fn open_folder(path: &std::path::Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.access_mode(0x180).custom_flags(0x02000000); // Read/write attributes with FILE_FLAG_BACKUP_SEMANTICS for directories.
+    }
+    options.open(path)
+}
+
+#[test]
+fn added_date_for_indexed_series_uses_show_folder_not_season_or_index_time() {
+    let f = Fixture::new();
+    let sources = f.sources();
+    let mut db = LibraryDb::open(&f.db()).unwrap();
+    db.set_sources(&sources).unwrap();
+    let report = media_shelf::index(&sources, &AtomicBool::new(false), |_| {});
+    db.apply_scan(&sources, &report).unwrap();
+    open_folder(&f.root.join("Series/Show"))
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000),
+            ),
+        )
+        .unwrap();
+    let sql = rusqlite::Connection::open(f.db()).unwrap();
+    let expected: String = sql
+        .query_row("SELECT date(1600000000,'unixepoch','localtime')", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let videos = db.videos().unwrap();
+    let show = videos
+        .iter()
+        .find(|v| v.category == Category::Series)
+        .unwrap();
+    assert!(show.is_folder);
+    assert_eq!(show.added_date.as_ref(), Some(&expected));
 }

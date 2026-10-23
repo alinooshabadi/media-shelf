@@ -15,9 +15,10 @@ static TECH: LazyLock<Regex> = LazyLock::new(|| {
 static SAMPLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(?:^|[ ._-])sample$").unwrap());
 
 pub fn ignored_folder(name: &str) -> bool {
-    [".mediashelf-cleanup", ".deletedbytmm", "sample", "samples"]
-        .iter()
-        .any(|n| name.eq_ignore_ascii_case(n))
+    name.starts_with("._")
+        || [".mediashelf-cleanup", ".deletedbytmm", "sample", "samples"]
+            .iter()
+            .any(|n| name.eq_ignore_ascii_case(n))
 }
 pub fn sample_file(path: &std::path::Path) -> bool {
     path.file_stem()

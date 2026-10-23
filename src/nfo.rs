@@ -1,4 +1,4 @@
-//! Read local movie NFOs without changing them or contacting a provider.
+//! Read local movie and show NFOs without changing them or contacting a provider.
 use crate::{
     Category, Video,
     metadata::{Metadata, Person},
@@ -13,8 +13,11 @@ pub struct LocalMovie {
 }
 
 pub fn read(video: &Video) -> Result<Option<LocalMovie>, String> {
-    if video.category != Category::Movies {
-        return Ok(None);
+    if video.category == Category::Series {
+        if !video.is_folder {
+            return Ok(None);
+        }
+        return read_file(&video.path.join("tvshow.nfo"), Category::Series);
     }
     let parent = video.path.parent().ok_or("Missing movie directory")?;
     let entries: Vec<_> = match fs::read_dir(parent) {
@@ -36,22 +39,34 @@ pub fn read(video: &Video) -> Result<Option<LocalMovie>, String> {
             .iter()
             .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&name))
         {
-            let file = fs::File::open(entry.path()).map_err(|_| "Could not read local NFO")?;
-            let mut bytes = Vec::new();
-            file.take(4 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "Could not read local NFO")?;
-            if bytes.len() > 4 * 1024 * 1024 {
-                return Err("Local NFO exceeds 4 MiB".into());
-            }
-            let text = std::str::from_utf8(&bytes).map_err(|_| "Local NFO must use UTF-8")?;
-            return parse(text.trim_start_matches('\u{feff}')).map(Some);
+            return read_file(&entry.path(), Category::Movies);
         }
     }
     Ok(None)
 }
 
+fn read_file(path: &std::path::Path, category: Category) -> Result<Option<LocalMovie>, String> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("Could not read local NFO".into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read local NFO")?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err("Local NFO exceeds 4 MiB".into());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| "Local NFO must use UTF-8")?;
+    parse_category(text.trim_start_matches('\u{feff}'), category).map(Some)
+}
+
 pub fn parse(text: &str) -> Result<LocalMovie, String> {
+    parse_category(text, Category::Movies)
+}
+
+fn parse_category(text: &str, category: Category) -> Result<LocalMovie, String> {
     let doc = roxmltree::Document::parse_with_options(
         text,
         roxmltree::ParsingOptions {
@@ -62,8 +77,13 @@ pub fn parse(text: &str) -> Result<LocalMovie, String> {
     )
     .map_err(|_| "Invalid local NFO XML")?;
     let root = doc.root_element();
-    if !root.has_tag_name("movie") {
-        return Err("Expected a movie NFO".into());
+    let tag = if category == Category::Movies {
+        "movie"
+    } else {
+        "tvshow"
+    };
+    if !root.has_tag_name(tag) {
+        return Err(format!("Expected a {tag} NFO"));
     }
     let get = |key| {
         root.children()
@@ -73,7 +93,7 @@ pub fn parse(text: &str) -> Result<LocalMovie, String> {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
     };
-    let title = get("title").ok_or("NFO movie title is missing")?;
+    let title = get("title").ok_or("NFO title is missing")?;
     let year = get("year")
         .and_then(|v| v.parse::<u16>().ok())
         .filter(|y| (1800..=2199).contains(y));
@@ -84,15 +104,17 @@ pub fn parse(text: &str) -> Result<LocalMovie, String> {
         .and_then(|v| v.trim().parse::<i64>().ok())
         .or_else(|| get("tmdbid").and_then(|v| v.parse().ok()))
         .filter(|id| *id > 0);
-    let Some(id) = id else {
+    if id.is_none() && category == Category::Movies {
         return Ok(LocalMovie {
             title,
             year,
             metadata: None,
         });
-    };
+    }
+    // Local-only series metadata has no provider match; storage never saves ID 0 as one.
+    let id = id.unwrap_or(0);
     let identity = TmdbMatch {
-        category: Category::Movies,
+        category,
         id,
         title: title.clone(),
         original_title: get("originaltitle").unwrap_or_else(|| title.clone()),
@@ -157,8 +179,13 @@ pub fn parse(text: &str) -> Result<LocalMovie, String> {
             .children()
             .find(|n| n.has_tag_name("value"))
             .and_then(|n| n.text())
-            .and_then(|v| v.parse::<f64>().ok())
-            .filter(|v| v.is_finite() && (0.0..=10.0).contains(v));
+            .or_else(|| r.text())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .and_then(|v| {
+                let max = r.attribute("max").unwrap_or("10").parse::<f64>().ok()?;
+                (v.is_finite() && max.is_finite() && max > 0.0 && (0.0..=max).contains(&v))
+                    .then_some(v * (10.0 / max))
+            });
         data.votes = r
             .children()
             .find(|n| n.has_tag_name("votes"))

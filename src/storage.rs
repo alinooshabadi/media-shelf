@@ -195,6 +195,36 @@ impl LibraryDb {
             videos.iter_mut().filter(|v| v.category == Category::Movies),
             &self.sources()?,
         );
+        let mut dates = std::collections::HashMap::new();
+        let mut date_query = self
+            .connection
+            .prepare("SELECT date(?1,'unixepoch','localtime')")?;
+        for video in &mut videos {
+            let folder = if video.is_folder {
+                Some(video.path.as_path())
+            } else {
+                video.path.parent()
+            };
+            if let Some(folder) = folder {
+                let date = dates.entry(folder.to_path_buf()).or_insert_with(|| {
+                    let seconds = folder
+                        .metadata()
+                        .ok()?
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_secs();
+                    date_query
+                        .query_row([i64::try_from(seconds).ok()?], |r| {
+                            r.get::<_, Option<String>>(0)
+                        })
+                        .ok()
+                        .flatten()
+                });
+                video.added_date = date.clone();
+            }
+        }
         Ok(videos)
     }
 
@@ -202,29 +232,86 @@ impl LibraryDb {
         if self.ensure_files_settled().is_err() {
             return Ok(vec![]);
         }
+        Ok(self.import_nfos(None)?.1)
+    }
+
+    /// Explicit refresh changes cached metadata only, never media or NFO files.
+    pub fn reload_local_nfos(&mut self, paths: &[PathBuf]) -> DbResult<(usize, Vec<String>)> {
+        self.ensure_files_settled()?;
+        self.import_nfos(Some(paths))
+    }
+
+    fn import_nfos(&mut self, reload: Option<&[PathBuf]>) -> DbResult<(usize, Vec<String>)> {
         let mut entries = vec![];
         let mut warnings = vec![];
         for video in read_videos(&self.connection)? {
-            if video.category != Category::Movies
-                || video.tmdb.is_some()
-                || video.metadata.is_some()
+            if let Some(paths) = reload {
+                if !paths.contains(&video.path) {
+                    continue;
+                }
+            } else if video.category == Category::Movies
+                && (video.tmdb.is_some() || video.metadata.is_some())
             {
                 continue;
             }
             match crate::nfo::read(&video) {
                 Ok(Some(local)) => {
-                    if let Some(data) = local.metadata {
+                    if let Some(mut data) = local.metadata {
+                        if video.category == Category::Series {
+                            let baseline = video
+                                .tmdb
+                                .clone()
+                                .or_else(|| video.metadata.as_ref().map(|m| m.identity.clone()));
+                            if let Some(saved) = baseline {
+                                if saved.id > 0
+                                    && data.identity.id > 0
+                                    && saved.id != data.identity.id
+                                {
+                                    warnings.push(format!("{}: NFO TMDB ID conflicts with the saved match; metadata kept", video.path.display()));
+                                    continue;
+                                }
+                                if saved.id > 0 {
+                                    data.identity.id = saved.id;
+                                }
+                                let mut merged = crate::metadata::merge(
+                                    video.metadata.as_ref(),
+                                    saved,
+                                    &data,
+                                    &crate::metadata::ScrapeOptions {
+                                        only_missing: reload.is_none(),
+                                        ..Default::default()
+                                    },
+                                );
+                                if let Some(old) = &video.metadata {
+                                    if reload.is_none() && old.imdb_id.is_some() {
+                                        merged.imdb_id = old.imdb_id.clone();
+                                    }
+                                    merged.poster_file = old.poster_file.clone();
+                                    merged.fanart_file = old.fanart_file.clone();
+                                }
+                                merged.nfo_written = true;
+                                data = merged;
+                            }
+                        }
                         entries.push((video.category, video.path, data));
                     }
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    if reload.is_some() {
+                        warnings.push(format!(
+                            "{}: No importable local NFO found",
+                            video.path.display()
+                        ));
+                    }
+                }
                 Err(e) => warnings.push(format!("{}: {e}", video.path.display())),
             }
         }
-        if !entries.is_empty() {
+        let count = entries.len();
+        if count > 0 {
             self.save_scraped(&entries)?;
         }
-        Ok(warnings)
+        Ok((count, warnings))
     }
 
     pub fn save_match(
@@ -271,9 +358,11 @@ impl LibraryDb {
                 return Err("Scrape category does not match the library item".into());
             }
             let m = &data.identity;
-            tx.execute("INSERT INTO tmdb_matches(category,path,tmdb_id,title,original_title,release_date,overview) VALUES (?1,?2,?3,?4,?5,?6,?7)
+            if m.id > 0 {
+                tx.execute("INSERT INTO tmdb_matches(category,path,tmdb_id,title,original_title,release_date,overview) VALUES (?1,?2,?3,?4,?5,?6,?7)
                 ON CONFLICT(category,path) DO UPDATE SET tmdb_id=excluded.tmdb_id,title=excluded.title,original_title=excluded.original_title,release_date=excluded.release_date,overview=excluded.overview,matched_at=unixepoch()",
                 params![category.label(),path_text(path)?,m.id,m.title,m.original_title,m.release_date,m.overview])?;
+            }
             tx.execute("INSERT INTO scraped_metadata(category,path,data_json) VALUES (?1,?2,?3) ON CONFLICT(category,path) DO UPDATE SET data_json=excluded.data_json,scraped_at=unixepoch()",
                 params![category.label(),path_text(path)?,serde_json::to_string(data)?])?;
         }
@@ -441,7 +530,7 @@ fn read_sources(connection: &Connection) -> DbResult<Vec<Source>> {
 fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     let mut stmt = connection.prepare(
         "SELECT v.category, v.path, v.relative_path, v.bytes,
-        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json,v.is_folder,date(v.first_seen_at,'unixepoch','localtime') FROM videos v
+        m.tmdb_id,m.title,m.original_title,m.release_date,m.overview,s.data_json,v.is_folder FROM videos v
         LEFT JOIN tmdb_matches m ON m.category=v.category AND m.path=v.path
         LEFT JOIN scraped_metadata s ON s.category=v.category AND s.path=v.path
         ORDER BY v.category, v.path COLLATE NOCASE",
@@ -449,7 +538,7 @@ fn read_videos(connection: &Connection) -> DbResult<Vec<Video>> {
     Ok(stmt
         .query_map([], |r| {
             Ok(Video {
-                added_date: r.get(11)?,
+                added_date: None,
                 is_folder: r.get(10)?,
                 artwork: Default::default(),
                 category: category(r)?,

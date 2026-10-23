@@ -12,7 +12,7 @@ On macOS, open **Media Shelf.app** instead. In the app:
 1. Choose **Movies** or **TV shows**.
 2. Open **Data sources** and browse for a folder, or paste a folder path and click **Add**.
 3. The scan starts automatically. Movies are recursive; TV sources index only immediate show folders. Add more folders if needed.
-4. Click a column header to sort; click again to reverse the order. **Added** is the date an item was first indexed and is preserved by rescans and renames. Filter by title/path. Expand a TV show to browse its seasons and numbered episodes. Click an episode to view its file details, or a season to select its episodes. Ctrl-click (Command-click on Mac) selects multiple items. Use **Refresh episodes** inside a show after external file changes.
+4. Click a column header to sort; click again to reverse the order. **Added** uses the last modification date of the show folder or the folder containing a movie, in local time. It refreshes when the library is loaded or rescanned; unavailable folders show a dash. Filter by title/path. Expand a TV show to browse its seasons and numbered episodes. Click an episode to view its file details, or a season to view its episode table. Ctrl-click (Command-click on Mac) selects multiple items. Use **Refresh episodes** inside a show after external file changes.
 5. Right-click a movie or TV show for **Search & scrape** and **Rename**. With episodes selected, toolbar scrape and rename actions apply to their parent show. Right-clicking a selected item keeps the multi-selection. Rename applies the default format immediately; selected items need a saved match or local NFO with title/year.
 6. Click **Update sources** after adding files to your media folders.
 
@@ -59,7 +59,7 @@ TMDB matches keep priority. Local hints are not treated as confirmed matches.
 Sample/samples folders, `.deletedByTMM`, `.mediashelf-cleanup` and filenames
 ending in a separate `sample` token are excluded. Click Update sources with the
 source online to prune previously indexed excluded clips. No media is deleted.
-Existing movie NFOs are imported as described below.
+Existing NFOs are imported as described below.
 ### Existing artwork
 
 Local artwork loads automatically at startup and when the library refreshes,
@@ -72,7 +72,7 @@ TV show artwork is loaded when selecting a show, so indexing does not enumerate 
 No artwork filter recognize these local files. Artwork is read in place, without
 creating a provider match or changing the files. Metadata still requires scraping;
 movie NFO import is supported; other artwork categories are not implemented yet.
-### Import existing movie NFOs
+### Import existing NFOs
 
 On startup and after Update sources, unmatched movies can import `movie.nfo` or
 `<video-stem>.nfo` without TMDB access. A generic movie.nfo is used only in a
@@ -80,8 +80,12 @@ folder with one main video, avoiding accidental assignment across a flat library
 A valid TMDB ID imports supported metadata into SQLite. Existing app matches and
 metadata retain priority. NFO files are read only; unsupported fields remain in
 the original file. An NFO with only a title and year still enables Rename without
-inventing a provider ID. TV NFO import is not supported yet. XML DTDs are rejected
-and file sizes are capped. Scan warnings report invalid NFO files.
+inventing a provider ID. XML DTDs are rejected
+and file sizes are capped. Warnings report invalid NFO files.
+
+TV shows import `Show/tvshow.nfo` on startup and after **Update sources**, without scanning seasons or episodes. Title, year, plot, rating, genres, cast, and supported provider IDs are cached in SQLite. NFOs without a TMDB ID still supply local metadata. Automatic import fills missing fields and preserves saved values. Conflicting TMDB IDs produce a warning and keep the saved match.
+
+Right-click selected shows and choose **Reload local metadata** to refresh cached fields from their NFOs. This replaces cached field values with the NFO contents, while retaining the saved provider match and local artwork paths. It never rewrites NFOs or media files. Missing or malformed NFOs leave cached metadata intact.
 Paths in Overview, Media files and Data sources are clickable. Click a media
 path to open its containing folder in Windows Explorer. Offline folders show an
 error instead of launching an invalid location.
@@ -128,6 +132,9 @@ Unrecognized and multi-episode filenames stay unchanged and are reported.
 Empty old directories are removed after a successful series rename; Undo recreates
 the original paths. Existing show folders are never merged.
 SQLite paths and saved matches/metadata are updated after successful moves.
+On macOS, NAS shares that reject exclusive renames use the native file-manager
+move on the same volume, preserving overwrite protection and Undo. macOS `._`
+metadata files and directories are excluded from media indexing and rename plans.
 
 ## Cleanup and Undo
 
@@ -195,7 +202,7 @@ confirmation; it does not silently update every field.
 
 TV sources index only first-level show folders, without enumerating seasons or
 episodes. Existing episode metadata stays in the local database and the library
-shows one top-level entry per show. Expanding a show loads only its episodes in the background, grouped by season with numeric ordering. Titles come from local episode NFOs or standard filenames; missing titles display as Episode N. A show scrape updates that entry and can write
+shows one top-level entry per show. Expanding a show loads only its episodes in the background, grouped by season with numeric ordering. Titles come from local episode NFOs or standard filenames. For matched shows with a TMDB token, missing titles load in the background, independently of the missing-episode display setting. Without a title source, rows display Episode N. A show scrape updates that entry and can write
 `tvshow.nfo`. Rename scans just the selected show and resolves episode titles;
 full episode plot scraping is not implemented. Optional missing-episode display is described below.
 Put each show inside its own folder; flat episodes in the source root are not indexed.
@@ -279,3 +286,7 @@ Dependencies: [eframe](https://docs.rs/eframe/0.33.3/eframe/),
 [walkdir](https://docs.rs/walkdir/2.5.0/walkdir/), and
 [Serde](https://serde.rs/), plus bundled SQLite via
 [rusqlite](https://docs.rs/rusqlite/0.40.2/rusqlite/).
+
+Selecting a season opens an episode table with episode number, title, aired date, and rating. Local episode NFO values take priority; matched shows can fill missing values from TMDB in the background. Click a local episode in the table to open its file details. Missing episodes appear here when their display is enabled in Settings.
+
+Episode details use existing local thumbnails (`<episode>-thumb.jpg`, `<episode>.thumb.jpg`, or `thumb.jpg`; JPEG, PNG, and WebP are supported). Titled `-thumb` sidecars can also match by season and episode number. Thumbnails load when a show is expanded and appear in Overview, Media files, and Artwork.

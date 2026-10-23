@@ -25,7 +25,7 @@ pub fn episode_numbers(path: &Path) -> Option<(u32, Vec<u32>)> {
 pub fn episode_details(
     path: &Path,
     siblings: &[PathBuf],
-) -> DbResult<Option<(u32, u32, Option<String>)>> {
+) -> DbResult<Option<(u32, u32, crate::metadata::EpisodeDetails)>> {
     series::details(path, siblings)
 }
 
@@ -670,14 +670,52 @@ fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
             flags: u32,
         ) -> std::ffi::c_int;
     }
-    let from = CString::new(from.as_os_str().as_bytes())?;
-    let to = CString::new(to.as_os_str().as_bytes())?;
-    // RENAME_EXCL preserves no-overwrite moves on SMB volumes without hard-link support.
-    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 0x00000004) } == 0 {
+    let c_from = CString::new(from.as_os_str().as_bytes())?;
+    let c_to = CString::new(to.as_os_str().as_bytes())?;
+    let result = if unsafe { renamex_np(c_from.as_ptr(), c_to.as_ptr(), 0x00000004) } == 0 {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
+    };
+    finish_macos_move(from, to, result)
+}
+
+#[cfg(target_os = "macos")]
+fn finish_macos_move(from: &Path, to: &Path, result: std::io::Result<()>) -> std::io::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString};
+    use std::os::unix::fs::MetadataExt;
+    match result {
+        Err(e) if e.raw_os_error() == Some(45) || e.kind() == std::io::ErrorKind::Unsupported => {}
+        other => return other,
     }
+    // Some SMB servers reject RENAME_EXCL; Foundation's move also refuses existing destinations.
+    // Stay on this volume so the fallback remains a rename, not a video copy followed by deletion.
+    if fs::symlink_metadata(from)?.dev()
+        != fs::metadata(
+            to.parent()
+                .ok_or_else(|| std::io::Error::other("Missing destination folder"))?,
+        )?
+        .dev()
+    {
+        return Err(std::io::Error::from_raw_os_error(18));
+    }
+    let path = |p: &Path| {
+        p.to_str().map(NSString::from_str).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Filename is not UTF-8")
+        })
+    };
+    let from = path(from)?;
+    let to = path(to)?;
+    NSFileManager::defaultManager()
+        .moveItemAtPath_toPath_error(&from, &to)
+        .map_err(|e| {
+            let kind = if e.domain().to_string() == "NSCocoaErrorDomain" && e.code() == 516 {
+                std::io::ErrorKind::AlreadyExists
+            } else {
+                std::io::ErrorKind::Other
+            };
+            std::io::Error::new(kind, e.localizedDescription().to_string())
+        })
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -976,4 +1014,54 @@ pub fn undo(db: &mut LibraryDb, id: i64, plan: &OperationPlan) -> DbResult<()> {
     }
     remove_empty_show_folders(plan, true);
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_move_tests {
+    use super::*;
+    #[test]
+    fn unsupported_exclusive_move_uses_native_move_without_overwriting() {
+        let temp = tempfile::tempdir().unwrap();
+        let from = temp.path().join("source ü.mkv");
+        let to = temp.path().join("target ü.mkv");
+        fs::write(&from, b"original").unwrap();
+        let before = fingerprint(&from).unwrap();
+        finish_macos_move(&from, &to, Err(std::io::Error::from_raw_os_error(45))).unwrap();
+        assert!(!from.exists());
+        assert_eq!(fs::read(&to).unwrap(), b"original");
+        assert_eq!(fingerprint(&to).unwrap(), before);
+        fs::write(&from, b"second").unwrap();
+        assert!(finish_macos_move(&from, &to, Err(std::io::Error::from_raw_os_error(45))).is_err());
+        assert_eq!(fs::read(&from).unwrap(), b"second");
+        assert_eq!(fs::read(&to).unwrap(), b"original");
+        let error = finish_macos_move(
+            &from,
+            &temp.path().join("permission"),
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(from.exists());
+        let dir = temp.path().join("directory");
+        fs::create_dir(&dir).unwrap();
+        assert!(
+            finish_macos_move(&from, &dir, Err(std::io::Error::from_raw_os_error(45))).is_err()
+        );
+        assert!(from.exists());
+        assert!(!dir.join("source ü.mkv").exists());
+        let link = temp.path().join("symlink");
+        std::os::unix::fs::symlink(&to, &link).unwrap();
+        assert!(
+            finish_macos_move(&from, &link, Err(std::io::Error::from_raw_os_error(45))).is_err()
+        );
+        assert_eq!(fs::read(&to).unwrap(), b"original");
+        assert!(from.exists());
+        finish_macos_move(
+            &to,
+            &temp.path().join("restored"),
+            Err(std::io::Error::from_raw_os_error(45)),
+        )
+        .unwrap();
+        assert_eq!(fingerprint(&temp.path().join("restored")).unwrap(), before);
+    }
 }

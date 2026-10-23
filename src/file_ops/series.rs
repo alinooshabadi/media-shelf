@@ -68,7 +68,11 @@ pub(super) fn numbers(path: &Path) -> Option<(u32, Vec<u32>)> {
     Some((season, numbers))
 }
 
-fn nfo_title(path: &Path, season: u32, number: u32) -> DbResult<Option<String>> {
+fn nfo_details(
+    path: &Path,
+    season: u32,
+    number: u32,
+) -> DbResult<Option<crate::metadata::EpisodeDetails>> {
     match fs::File::open(path) {
         Ok(file) => {
             let mut bytes = vec![];
@@ -88,9 +92,49 @@ fn nfo_title(path: &Path, season: u32, number: u32) -> DbResult<Option<String>> 
                 if root.has_tag_name("episodedetails")
                     && value("season").is_none_or(|s| s.parse().ok() == Some(season))
                     && value("episode").is_none_or(|s| s.parse().ok() == Some(number))
-                    && let Some(title) = value("title").filter(|s| !s.trim().is_empty())
                 {
-                    return Ok(Some(title.trim().to_string()));
+                    let rating_node = root
+                        .children()
+                        .find(|n| n.has_tag_name("ratings"))
+                        .and_then(|ratings| {
+                            let nodes: Vec<_> = ratings
+                                .children()
+                                .filter(|n| n.has_tag_name("rating"))
+                                .collect();
+                            nodes
+                                .iter()
+                                .copied()
+                                .find(|n| n.attribute("default") == Some("true"))
+                                .or_else(|| nodes.first().copied())
+                        })
+                        .or_else(|| root.children().find(|n| n.has_tag_name("rating")));
+                    let rating = rating_node.and_then(|node| {
+                        let rating = node
+                            .children()
+                            .find(|n| n.has_tag_name("value"))
+                            .and_then(|n| n.text())
+                            .or_else(|| node.text())?
+                            .trim()
+                            .parse::<f64>()
+                            .ok()?;
+                        let max = node.attribute("max").unwrap_or("10").parse::<f64>().ok()?;
+                        (rating.is_finite()
+                            && max.is_finite()
+                            && max > 0.0
+                            && rating >= 0.0
+                            && rating <= max)
+                            .then_some(rating / max * 10.0)
+                    });
+                    let aired = value("aired")
+                        .or_else(|| value("premiered"))
+                        .map(str::trim)
+                        .filter(|d| crate::metadata::valid_episode_date(d))
+                        .map(str::to_owned);
+                    return Ok(Some(crate::metadata::EpisodeDetails {
+                        title: value("title").unwrap_or("").trim().into(),
+                        aired,
+                        rating,
+                    }));
                 }
             }
         }
@@ -100,31 +144,43 @@ fn nfo_title(path: &Path, season: u32, number: u32) -> DbResult<Option<String>> 
     Ok(None)
 }
 
-fn local_title(
+fn local_details(
     path: &Path,
     season: u32,
     number: u32,
     end: usize,
     siblings: &[PathBuf],
-) -> DbResult<Option<String>> {
-    if let Some(title) = nfo_title(&path.with_extension("nfo"), season, number)? {
-        return Ok(Some(title));
+) -> DbResult<crate::metadata::EpisodeDetails> {
+    let exact = path.with_extension("nfo");
+    let mut data = nfo_details(&exact, season, number)?.unwrap_or_default();
+    if !data.title.is_empty() {
+        return Ok(data);
     }
     let mut titles = std::collections::BTreeSet::new();
     for sibling in siblings.iter().filter(|p| {
-        p.parent() == path.parent()
+        **p != exact
+            && p.parent() == path.parent()
             && p.extension().is_some_and(|s| s.eq_ignore_ascii_case("nfo"))
             && episode(p).is_some_and(|(s, e, _)| (s, e) == (season, number))
     }) {
-        if let Some(title) = nfo_title(sibling, season, number)? {
-            titles.insert(title);
+        if let Some(info) = nfo_details(sibling, season, number)? {
+            if !info.title.is_empty() {
+                titles.insert(info.title);
+            }
+            if data.aired.is_none() {
+                data.aired = info.aired;
+            }
+            if data.rating.is_none() {
+                data.rating = info.rating;
+            }
         }
     }
     if titles.len() > 1 {
         return Err(format!("Conflicting NFO titles for S{season:02}E{number:02}; choose the correct NFO before renaming.").into());
     }
     if let Some(title) = titles.into_iter().next() {
-        return Ok(Some(title));
+        data.title = title;
+        return Ok(data);
     }
     let title = path
         .file_stem()
@@ -136,20 +192,35 @@ fn local_title(
         r"(?i)^(?:web[- .]?dl|webrip|bluray|blu-ray|\d{3,4}p|[xh]26[45])(?:$|[ ._-])",
     )
     .unwrap();
-    Ok(title.filter(|s| !technical.is_match(s)).map(str::to_owned))
+    data.title = title
+        .filter(|s| !technical.is_match(s))
+        .unwrap_or("")
+        .into();
+    Ok(data)
+}
+
+fn local_title(
+    path: &Path,
+    season: u32,
+    number: u32,
+    end: usize,
+    siblings: &[PathBuf],
+) -> DbResult<Option<String>> {
+    let data = local_details(path, season, number, end, siblings)?;
+    Ok((!data.title.is_empty()).then_some(data.title))
 }
 
 pub(super) fn details(
     path: &Path,
     siblings: &[PathBuf],
-) -> DbResult<Option<(u32, u32, Option<String>)>> {
+) -> DbResult<Option<(u32, u32, crate::metadata::EpisodeDetails)>> {
     let Some((season, number, end)) = episode(path) else {
         return Ok(None);
     };
     Ok(Some((
         season,
         number,
-        local_title(path, season, number, end, siblings)?,
+        local_details(path, season, number, end, siblings)?,
     )))
 }
 
@@ -277,6 +348,8 @@ pub(super) fn append(
         .min_depth(1)
         .follow_links(false)
         .follow_root_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with("._"))
     {
         let entry = entry?;
         if entry.file_type().is_symlink() {
@@ -347,6 +420,22 @@ pub(super) fn append(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apple_double_metadata_is_not_an_episode_or_a_planned_move() {
+        let (_temp, db, show) = fixture();
+        let hidden = show.path.join("Season 01/._release.S01E01.1080p.mkv");
+        fs::write(&hidden, b"macOS metadata").unwrap();
+        let plan = plan(&db, &show);
+        assert!(plan.moves.iter().all(|m| {
+            !m.from
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("._")
+        }));
+        assert!(!crate::is_video(&hidden));
+    }
 
     #[test]
     fn conflicting_sibling_nfos_stop_the_rename_without_a_guess() {

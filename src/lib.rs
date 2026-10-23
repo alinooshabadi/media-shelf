@@ -38,7 +38,7 @@ pub struct Source {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Video {
-    /// First library scan date in local time (YYYY-MM-DD); absent on unsaved scan results.
+    /// Containing folder modification date in local time (YYYY-MM-DD); absent when unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_date: Option<String>,
     #[serde(default)]
@@ -63,6 +63,12 @@ pub struct ScanReport {
 }
 
 pub fn is_video(path: &Path) -> bool {
+    if path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with("._"))
+    {
+        return false;
+    }
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
         matches!(
             e.to_ascii_lowercase().as_str(),

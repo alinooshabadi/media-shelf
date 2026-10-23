@@ -1,5 +1,6 @@
 //! Episode browsing is loaded on demand; the saved library stays a shallow show index.
 use super::*;
+use media_shelf::metadata::EpisodeDetails;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
@@ -7,7 +8,9 @@ use std::path::Path;
 pub(super) struct Episode {
     pub video: Video,
     pub number: Option<u32>,
+    pub needs_title: bool,
     pub label: String,
+    pub details: EpisodeDetails,
 }
 
 #[derive(Clone, Default)]
@@ -15,7 +18,8 @@ pub(super) struct Show {
     pub seasons: BTreeMap<Option<u32>, Vec<Episode>>,
     pub warnings: Vec<String>,
     pub missing: BTreeMap<u32, BTreeMap<u32, String>>,
-    pub checking_missing: bool,
+    pub checking_metadata: bool,
+    pub metadata: BTreeMap<u32, BTreeMap<u32, EpisodeDetails>>,
     present: std::collections::BTreeSet<(u32, u32)>,
     unrecognized: usize,
 }
@@ -28,6 +32,19 @@ impl Show {
     }
     pub fn add_missing(&mut self, catalog: BTreeMap<u32, BTreeMap<u32, String>>) {
         for (season, episodes) in catalog {
+            let details = episodes
+                .iter()
+                .map(|(n, t)| {
+                    (
+                        *n,
+                        EpisodeDetails {
+                            title: t.clone(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            self.fill_details(season, &details);
             for (number, title) in episodes {
                 if !self.present.contains(&(season, number)) {
                     self.missing
@@ -35,18 +52,64 @@ impl Show {
                         .or_default()
                         .insert(number, title);
                     self.seasons.entry(Some(season)).or_default();
-                } else if let Some(episode) = self
-                    .seasons
-                    .get_mut(&Some(season))
-                    .and_then(|episodes| episodes.iter_mut().find(|e| e.number == Some(number)))
-                {
-                    if episode.label == format!("{number}. Episode {number}") {
-                        episode.label = format!("{number}. {title}");
-                    }
                 }
             }
         }
     }
+    fn fill_details(&mut self, season: u32, details: &BTreeMap<u32, EpisodeDetails>) {
+        if let Some(episodes) = self.seasons.get_mut(&Some(season)) {
+            for episode in episodes {
+                if let Some(info) = episode.number.and_then(|n| details.get(&n)) {
+                    if episode.needs_title && !info.title.trim().is_empty() {
+                        episode.label = format!("{}. {}", episode.number.unwrap(), info.title);
+                        episode.details.title = info.title.clone();
+                        episode.needs_title = false;
+                    }
+                    if episode.details.aired.is_none() {
+                        episode.details.aired = info.aired.clone();
+                    }
+                    if episode.details.rating.is_none() {
+                        episode.details.rating = info.rating;
+                    }
+                }
+            }
+        }
+        self.metadata.insert(season, details.clone());
+    }
+
+    fn apply_catalog(&mut self, catalog: BTreeMap<u32, BTreeMap<u32, EpisodeDetails>>) {
+        self.add_missing(
+            catalog
+                .iter()
+                .map(|(s, episodes)| {
+                    (
+                        *s,
+                        episodes
+                            .iter()
+                            .map(|(n, e)| (*n, e.title.clone()))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        );
+        for (season, details) in catalog {
+            self.fill_details(season, &details);
+        }
+    }
+
+    fn incomplete_seasons(&self) -> Vec<u32> {
+        self.seasons
+            .iter()
+            .filter_map(|(season, episodes)| {
+                season.filter(|_| {
+                    episodes.iter().any(|e| {
+                        e.needs_title || e.details.aired.is_none() || e.details.rating.is_none()
+                    })
+                })
+            })
+            .collect()
+    }
+
     pub fn count(&self) -> usize {
         self.seasons.values().map(Vec::len).sum()
     }
@@ -69,6 +132,7 @@ impl SeriesTree {
         folder: &Path,
         sources: &[Source],
         catalog: Option<(i64, String, String)>,
+        show_missing: bool,
     ) {
         if self.shows.contains_key(folder) || self.pending.contains_key(folder) {
             return;
@@ -81,18 +145,40 @@ impl SeriesTree {
         std::thread::spawn(move || {
             let mut loaded = load(&folder, &sources);
             if let Some((id, token, language)) = catalog {
-                if !loaded.warnings.is_empty() || loaded.unrecognized > 0 {
+                let check_missing =
+                    show_missing && loaded.warnings.is_empty() && loaded.unrecognized == 0;
+                if show_missing && !check_missing {
                     loaded.warnings.push("Missing-episode check skipped: some files could not be read or their episode numbers were not recognized.".into());
-                } else {
-                    loaded.checking_missing = true;
+                }
+                let seasons = loaded.incomplete_seasons();
+                if check_missing || (!token.trim().is_empty() && !seasons.is_empty()) {
+                    loaded.checking_metadata = true;
                     if sender.send(loaded.clone()).is_err() {
                         return;
                     }
-                    match media_shelf::metadata::episode_catalog(id, &token, &language, &cancel) {
-                        Ok(catalog) => loaded.add_missing(catalog),
-                        Err(e) => loaded.warnings.push(format!("Missing-episode check: {e}")),
+                    if check_missing {
+                        match media_shelf::metadata::episode_catalog_details(
+                            id, &token, &language, &cancel,
+                        ) {
+                            Ok(catalog) => loaded.apply_catalog(catalog),
+                            Err(e) => loaded.warnings.push(format!("Missing-episode check: {e}")),
+                        }
+                    } else {
+                        for season in seasons {
+                            if cancel.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            match media_shelf::metadata::season_episodes(
+                                id, season, &token, &language,
+                            ) {
+                                Ok(details) => loaded.fill_details(season, &details),
+                                Err(e) => loaded
+                                    .warnings
+                                    .push(format!("Episode details for season {season}: {e}")),
+                            }
+                        }
                     }
-                    loaded.checking_missing = false;
+                    loaded.checking_metadata = false;
                 }
             }
             let _ = sender.send(loaded);
@@ -173,12 +259,19 @@ pub(super) fn load(folder: &Path, sources: &[Source]) -> Show {
                 None
             }
         };
-        let (season, number, label) = match details {
-            Some((s, n, title)) => (
-                Some(s),
-                Some(n),
-                format!("{n}. {}", title.unwrap_or_else(|| format!("Episode {n}"))),
-            ),
+        let (season, number, label, needs_title, info) = match details {
+            Some((s, n, info)) => {
+                let needs_title = info.title.is_empty();
+                let label = format!(
+                    "{n}. {}",
+                    if needs_title {
+                        format!("Episode {n}")
+                    } else {
+                        info.title.clone()
+                    }
+                );
+                (Some(s), Some(n), label, needs_title, info)
+            }
             None => (
                 None,
                 None,
@@ -186,6 +279,8 @@ pub(super) fn load(folder: &Path, sources: &[Source]) -> Show {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .into_owned(),
+                false,
+                EpisodeDetails::default(),
             ),
         };
         let bytes = match path.metadata() {
@@ -208,10 +303,15 @@ pub(super) fn load(folder: &Path, sources: &[Source]) -> Show {
                 bytes,
                 tmdb: None,
                 metadata: None,
-                artwork: Default::default(),
+                artwork: media_shelf::artwork::Artwork {
+                    thumb: media_shelf::artwork::episode_thumb(path, &files),
+                    ..Default::default()
+                },
             },
             number,
+            needs_title,
             label,
+            details: info,
         });
     }
     for episodes in show.seasons.values_mut() {
@@ -227,6 +327,72 @@ pub(super) fn load(folder: &Path, sources: &[Source]) -> Show {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_local_title_is_filled_without_enabling_missing_episode_display() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("The Rehearsal (2022)");
+        let season = folder.join("Season 1");
+        std::fs::create_dir_all(&season).unwrap();
+        for number in [1, 6] {
+            std::fs::write(
+                season.join(format!("The Rehearsal - S01E{number:02}.mp4")),
+                b"video",
+            )
+            .unwrap();
+        }
+        std::fs::write(season.join("The Rehearsal - S01E01 - Local Title.nfo"),"<episodedetails><title>Local Title</title><season>1</season><episode>1</episode><aired>2022-07-14</aired><ratings><rating default=\"true\" max=\"5\"><value>4.5</value></rating></ratings></episodedetails>").unwrap();
+        let mut loaded = load(&folder, &[]);
+        assert_eq!(loaded.incomplete_seasons(), vec![1]);
+        assert_eq!(loaded.seasons[&Some(1)][1].label, "6. Episode 6");
+        loaded.fill_details(
+            1,
+            &BTreeMap::from([
+                (
+                    1,
+                    EpisodeDetails {
+                        title: "Provider Title".into(),
+                        aired: Some("2022-07-15".into()),
+                        rating: Some(7.8),
+                    },
+                ),
+                (
+                    6,
+                    EpisodeDetails {
+                        title: "Pretend Daddy".into(),
+                        aired: Some("2022-08-19".into()),
+                        rating: Some(8.3),
+                    },
+                ),
+                (
+                    7,
+                    EpisodeDetails {
+                        title: "Not on disk".into(),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+        );
+        assert_eq!(loaded.seasons[&Some(1)][0].label, "1. Local Title");
+        assert_eq!(loaded.seasons[&Some(1)][1].label, "6. Pretend Daddy");
+        assert!(loaded.incomplete_seasons().is_empty());
+        assert_eq!(
+            loaded.seasons[&Some(1)][0].details.aired.as_deref(),
+            Some("2022-07-14")
+        );
+        assert_eq!(loaded.seasons[&Some(1)][0].details.rating, Some(9.0));
+        assert_eq!(loaded.seasons[&Some(1)][1].details.rating, Some(8.3));
+        assert!(
+            loaded.missing.is_empty(),
+            "Title lookup must not enable missing-episode rows"
+        );
+        assert_eq!(loaded.count(), 2);
+        assert_eq!(
+            std::fs::read_dir(&season).unwrap().count(),
+            3,
+            "Browsing titles must not rename files or create NFOs"
+        );
+    }
+
     #[test]
     fn missing_entries_include_whole_seasons_and_respect_multi_episode_files() {
         let temp = tempfile::tempdir().unwrap();
@@ -291,8 +457,8 @@ mod tests {
         }];
         let mut tree = SeriesTree::default();
         assert!(tree.shows.is_empty() && tree.pending.is_empty());
-        tree.request(&folder, &sources, None);
-        tree.request(&folder, &sources, None);
+        tree.request(&folder, &sources, None, false);
+        tree.request(&folder, &sources, None, false);
         assert_eq!(tree.pending.len(), 1);
         let show = tree
             .pending
@@ -316,7 +482,7 @@ mod tests {
         );
         assert!(episodes[0].video.path.exists());
         tree.shows.insert(folder.clone(), show);
-        tree.request(&folder, &sources, None);
+        tree.request(&folder, &sources, None, false);
         assert!(
             tree.pending.is_empty(),
             "Already loaded shows must not be rescanned"

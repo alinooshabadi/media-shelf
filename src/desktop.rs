@@ -2,6 +2,7 @@ use eframe::egui::{self, Color32, RichText};
 mod file_tools;
 mod library_view;
 mod matching;
+mod season_view;
 mod series_tree;
 mod theme;
 use media_shelf::storage::{LibraryDb, database_path};
@@ -35,6 +36,7 @@ pub fn run() -> eframe::Result {
 
 enum Event {
     Progress(usize),
+    LocalReload(Result<(Vec<Video>, usize, Vec<String>), String>),
     Done(ScanReport, Result<Vec<Video>, String>),
 }
 
@@ -52,6 +54,7 @@ struct App {
     cancel: Arc<AtomicBool>,
     database: Option<LibraryDb>,
     selected: Option<PathBuf>,
+    selected_season: Option<(PathBuf, u32)>,
     tmdb_ui: matching::TmdbUi,
     file_tools: file_tools::FileTools,
     selection: std::collections::HashSet<PathBuf>,
@@ -69,14 +72,15 @@ impl App {
             let mut db = LibraryDb::open(&path)?;
             db.migrate_folders(&path.with_file_name("folders.json"))?;
             let sources = db.sources()?;
-            db.import_local_nfos()?;
+            let warnings = db.import_local_nfos()?;
             let videos = db.videos()?;
-            Ok((db, sources, videos))
+            Ok((db, sources, videos, warnings))
         })();
-        let (database, sources, videos, error) = match loaded {
-            Ok((db, sources, videos)) => (Some(db), sources, videos, None),
+        let (database, sources, videos, warnings, error) = match loaded {
+            Ok((db, sources, videos, warnings)) => (Some(db), sources, videos, warnings, None),
             Err(e) => (
                 None,
+                vec![],
                 vec![],
                 vec![],
                 Some(format!(
@@ -111,13 +115,14 @@ impl App {
             filter: String::new(),
             videos,
             series_tree: Default::default(),
-            warnings: vec![],
+            warnings,
             error,
             status,
             receiver: None,
             cancel: Arc::new(AtomicBool::new(false)),
             database,
             selected,
+            selected_season: None,
             tmdb_ui,
             file_tools: file_tools::FileTools::new(),
             selection,
@@ -179,6 +184,34 @@ impl App {
         self.start_scan();
     }
 
+    fn reload_local_metadata(&mut self) {
+        if self.database.is_none() || self.receiver.is_some() {
+            return;
+        }
+        let paths: Vec<_> = self
+            .selected_videos(false)
+            .into_iter()
+            .map(|v| v.path)
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.status = "Reading local metadata…".into();
+        self.error = None;
+        self.warnings.clear();
+        std::thread::spawn(move || {
+            let result = (|| -> media_shelf::storage::DbResult<_> {
+                let mut db = LibraryDb::open(&database_path())?;
+                let (count, warnings) = db.reload_local_nfos(&paths)?;
+                Ok((db.videos()?, count, warnings))
+            })()
+            .map_err(|e| e.to_string());
+            let _ = sender.send(Event::LocalReload(result));
+        });
+    }
+
     fn start_scan(&mut self) {
         if self.receiver.is_some() || self.database.is_none() {
             return;
@@ -186,6 +219,7 @@ impl App {
         self.series_tree = Default::default();
         self.warnings.clear();
         self.selected = None;
+        self.selected_season = None;
         self.selection.clear();
         let sources = self.sources.clone();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -215,6 +249,24 @@ impl App {
         if let Some(receiver) = &self.receiver {
             loop {
                 match receiver.try_recv() {
+                    Ok(Event::LocalReload(result)) => {
+                        match result {
+                            Ok((videos, count, warnings)) => {
+                                self.videos = videos;
+                                self.series_tree = Default::default();
+                                self.status = format!(
+                                    "Reloaded local metadata for {count} item(s) · {} warnings",
+                                    warnings.len()
+                                );
+                                self.warnings = warnings;
+                            }
+                            Err(e) => {
+                                self.error = Some(format!("Could not reload local metadata: {e}"))
+                            }
+                        }
+                        done = true;
+                        break;
+                    }
                     Ok(Event::Progress(n)) => {
                         self.status = format!("Scanning folders… {n} movies / show folders found")
                     }

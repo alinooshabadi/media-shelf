@@ -1775,6 +1775,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "image",
+ "objc2-foundation 0.3.2",
  "regex",
  "reqwest",
  "rfd",

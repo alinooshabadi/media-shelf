@@ -342,6 +342,23 @@ fn details_at(
     parse_details(&data, category, id, language)
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EpisodeDetails {
+    pub title: String,
+    pub aired: Option<String>,
+    pub rating: Option<f64>,
+}
+
+/// Episode details used by season browsing; callers retain local NFO values.
+pub fn season_episodes(
+    id: i64,
+    season: u32,
+    token: &str,
+    language: &str,
+) -> Result<std::collections::BTreeMap<u32, EpisodeDetails>, String> {
+    season_episodes_at("https://api.themoviedb.org/3", id, season, token, language)
+}
+
 pub fn episode_titles(
     id: i64,
     season: u32,
@@ -358,39 +375,75 @@ fn episode_titles_at(
     token: &str,
     language: &str,
 ) -> Result<std::collections::BTreeMap<u32, String>, String> {
+    Ok(season_episodes_at(base, id, season, token, language)?
+        .into_iter()
+        .filter(|(_, e)| !e.title.trim().is_empty())
+        .map(|(n, e)| (n, e.title))
+        .collect())
+}
+
+fn season_episodes_at(
+    base: &str,
+    id: i64,
+    season: u32,
+    token: &str,
+    language: &str,
+) -> Result<std::collections::BTreeMap<u32, EpisodeDetails>, String> {
     if id <= 0 || season > 999 {
         return Err("Invalid show ID or season number".into());
     }
     #[derive(Deserialize)]
     struct Episode {
         episode_number: u32,
+        season_number: Option<u32>,
         name: String,
+        air_date: Option<String>,
+        vote_average: Option<f64>,
     }
     #[derive(Deserialize)]
     struct Season {
         season_number: u32,
         episodes: Vec<Episode>,
     }
-    let data = request_json(
+    let data: Season = serde_json::from_value(request_json(
         &format!("{base}/tv/{id}/season/{season}"),
         token,
         &[("language", language)],
-    )?;
-    let data: Season = serde_json::from_value(data).map_err(|_| "Invalid TMDB season response")?;
+    )?)
+    .map_err(|_| "Invalid TMDB season response")?;
     if data.season_number != season {
         return Err("TMDB returned a different season".into());
     }
-    let mut titles = std::collections::BTreeMap::new();
-    for episode in data.episodes {
-        if !episode.name.trim().is_empty()
-            && titles
-                .insert(episode.episode_number, episode.name)
-                .is_some()
-        {
+    let mut episodes = std::collections::BTreeMap::new();
+    for e in data.episodes {
+        if e.episode_number == 0 || e.season_number.is_some_and(|n| n != season) {
+            return Err("Invalid TMDB episode numbering".into());
+        }
+        let info = EpisodeDetails {
+            title: e.name,
+            aired: e.air_date.filter(|d| valid_episode_date(d)),
+            rating: e
+                .vote_average
+                .filter(|r| r.is_finite() && (0.0..=10.0).contains(r)),
+        };
+        if episodes.insert(e.episode_number, info).is_some() {
             return Err("TMDB returned duplicate episode numbers".into());
         }
     }
-    Ok(titles)
+    Ok(episodes)
+}
+
+pub(crate) fn valid_episode_date(d: &str) -> bool {
+    d.len() == 10
+        && d.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+        && ("01"..="12").contains(&&d[5..7])
+        && ("01"..="31").contains(&&d[8..10])
 }
 
 /// Aired TMDB episodes for optional missing-file display. No library or media writes.
@@ -407,6 +460,29 @@ pub fn episode_catalog(
             .as_secs(),
     );
     episode_catalog_at(
+        "https://api.themoviedb.org/3",
+        id,
+        token,
+        language,
+        &today,
+        cancel,
+    )
+}
+
+pub fn episode_catalog_details(
+    id: i64,
+    token: &str,
+    language: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, EpisodeDetails>>, String>
+{
+    let today = utc_date(
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "System clock is before 1970")?
+            .as_secs(),
+    );
+    episode_catalog_details_at(
         "https://api.themoviedb.org/3",
         id,
         token,
@@ -438,6 +514,23 @@ fn episode_catalog_at(
     today: &str,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, String>>, String> {
+    Ok(
+        episode_catalog_details_at(base, id, token, language, today, cancel)?
+            .into_iter()
+            .map(|(s, episodes)| (s, episodes.into_iter().map(|(n, e)| (n, e.title)).collect()))
+            .collect(),
+    )
+}
+
+fn episode_catalog_details_at(
+    base: &str,
+    id: i64,
+    token: &str,
+    language: &str,
+    today: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, EpisodeDetails>>, String>
+{
     use std::collections::{BTreeMap, BTreeSet};
     if id <= 0 {
         return Err("Invalid show ID".into());
@@ -450,18 +543,6 @@ fn episode_catalog_at(
     struct Show {
         id: i64,
         seasons: Vec<SeasonRef>,
-    }
-    #[derive(Deserialize)]
-    struct Episode {
-        episode_number: u32,
-        name: String,
-        air_date: Option<String>,
-        season_number: u32,
-    }
-    #[derive(Deserialize)]
-    struct Season {
-        season_number: u32,
-        episodes: Vec<Episode>,
     }
     let check_cancel = || {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -480,53 +561,19 @@ fn episode_catalog_at(
     if show.id != id || show.seasons.len() > 1000 {
         return Err("Invalid TMDB show response".into());
     }
-    let mut result = BTreeMap::new();
     let mut seen = BTreeSet::new();
+    let mut result = BTreeMap::new();
     for season in show.seasons {
         check_cancel()?;
         let n = season.season_number;
         if n > 999 || !seen.insert(n) {
             return Err("Invalid TMDB season list".into());
         }
-        let season: Season = serde_json::from_value(request_json(
-            &format!("{base}/tv/{id}/season/{n}"),
-            token,
-            &[("language", language)],
-        )?)
-        .map_err(|_| "Invalid TMDB season response")?;
-        if season.season_number != n {
-            return Err("TMDB returned a different season".into());
-        }
-        let mut episodes = BTreeMap::new();
-        let mut seen_episodes = BTreeSet::new();
-        for episode in season.episodes {
-            if episode.season_number != n
-                || episode.episode_number == 0
-                || !seen_episodes.insert(episode.episode_number)
-            {
-                return Err("Invalid or duplicate TMDB episode numbering".into());
-            }
-            if episode.air_date.as_deref().is_some_and(|d| {
-                d.len() == 10
-                    && d.bytes().enumerate().all(|(i, b)| {
-                        if i == 4 || i == 7 {
-                            b == b'-'
-                        } else {
-                            b.is_ascii_digit()
-                        }
-                    })
-                    && ("01"..="12").contains(&&d[5..7])
-                    && ("01"..="31").contains(&&d[8..10])
-                    && d <= today
-            }) {
-                episodes.insert(
-                    episode.episode_number,
-                    if episode.name.trim().is_empty() {
-                        format!("Episode {}", episode.episode_number)
-                    } else {
-                        episode.name
-                    },
-                );
+        let mut episodes = season_episodes_at(base, id, n, token, language)?;
+        episodes.retain(|_, e| e.aired.as_deref().is_some_and(|d| d <= today));
+        for (number, e) in &mut episodes {
+            if e.title.trim().is_empty() {
+                e.title = format!("Episode {number}");
             }
         }
         if !episodes.is_empty() {
@@ -1540,7 +1587,7 @@ mod request_tests {
         for (status, body, valid) in [
             (
                 200,
-                r#"{"season_number":1,"episodes":[{"episode_number":1,"name":"Pilot"}]}"#,
+                r#"{"season_number":1,"episodes":[{"episode_number":1,"name":"Pilot","air_date":"2022-07-15","vote_average":7.8}]}"#,
                 true,
             ),
             (200, r#"{"season_number":2,"episodes":[]}"#, false),
@@ -1567,7 +1614,7 @@ mod request_tests {
                 write!(stream, "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
                 String::from_utf8(request).unwrap()
             });
-            let result = episode_titles_at(
+            let result = season_episodes_at(
                 &format!("http://{address}"),
                 42,
                 1,
@@ -1584,7 +1631,12 @@ mod request_tests {
             );
             assert_eq!(result.is_ok(), valid);
             match result {
-                Ok(titles) => assert_eq!(titles.get(&1).map(String::as_str), Some("Pilot")),
+                Ok(details) => {
+                    let episode = &details[&1];
+                    assert_eq!(episode.title, "Pilot");
+                    assert_eq!(episode.aired.as_deref(), Some("2022-07-15"));
+                    assert_eq!(episode.rating, Some(7.8));
+                }
                 Err(error) => assert!(
                     !error.contains("private-token")
                         && !error.contains("sensitive server response")
