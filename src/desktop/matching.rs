@@ -1,3 +1,4 @@
+use super::theme;
 use eframe::egui::{self, RichText};
 use media_shelf::{
     Category, Video,
@@ -12,10 +13,13 @@ mod tests {
 
     #[test]
     fn movie_and_show_chooser_render_without_committing() {
-        for (category, height) in [
-            (Category::Movies, 880.0),
-            (Category::Series, 880.0),
-            (Category::Movies, 600.0),
+        for (category, height, dark) in [
+            (Category::Movies, 880.0, false),
+            (Category::Series, 880.0, false),
+            (Category::Movies, 600.0, false),
+            (Category::Movies, 880.0, true),
+            (Category::Series, 880.0, true),
+            (Category::Movies, 600.0, true),
         ] {
             let identity = tmdb::TmdbMatch {
                 category,
@@ -23,7 +27,7 @@ mod tests {
                 title: "Example title".into(),
                 original_title: "Original title".into(),
                 release_date: Some("2024-01-01".into()),
-                overview: "Example plot".into(),
+                overview: "A photographer returns to her coastal hometown to archive the stories of its last fishing families. Over one winter, old friendships and an unfinished journey bring her closer to the place she left behind. ".repeat(3),
             };
             let video = Video {
                 added_date: None,
@@ -45,6 +49,11 @@ mod tests {
             chooser.dialog = Some(dialog);
             let ctx = egui::Context::default();
             crate::desktop::theme::install(&ctx);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
             for frame in 0..3 {
                 let output = ctx.run(
                     egui::RawInput {
@@ -381,40 +390,40 @@ impl TmdbUi {
             window = window.open(&mut open);
         }
         window.show(ctx,|ui|{
-            let body_height = (ui.available_height() - 64.0).max(80.0);
+            let body_height = (ui.available_height() - 96.0).min(ctx.content_rect().height() - 200.0).max(80.0);
             egui::ScrollArea::vertical().id_salt("scrape_body").max_height(body_height).auto_shrink([false, false]).show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(dialog.video.path.display().to_string()).strong()).truncate()).on_hover_text(dialog.video.path.display().to_string());
+            ui.add(egui::Label::new(RichText::new(dialog.video.path.display().to_string()).family(egui::FontFamily::Name("Inter medium".into()))).truncate()).on_hover_text(dialog.video.path.display().to_string());
             if self.total>1{ui.label(format!("Item {} of {}",self.total-self.queue.len(),self.total));}ui.separator();
             ui.add_enabled_ui(!saving&&!searching,|ui|{
                 ui.horizontal(|ui|{
                     ui.label("Scraper");egui::ComboBox::from_id_salt("scraper").selected_text("themoviedb.org").show_ui(ui,|ui|{ui.label("themoviedb.org");});
-                    let response=ui.add(egui::TextEdit::singleline(&mut dialog.query).desired_width((ui.available_width()-100.0).max(200.0)).char_limit(200));
+                    let response=theme::text_edit(ui,egui::TextEdit::singleline(&mut dialog.query).desired_width((ui.available_width()-100.0).max(200.0)).char_limit(200));
                     if ui.button("Search").clicked()||(response.lost_focus()&&ui.input(|i|i.key_pressed(egui::Key::Enter))){search=Some(1);}
                 });
                 ui.horizontal(|ui|{
                     ui.label("Language");let previous=self.language.clone();
                     egui::ComboBox::from_id_salt("scrape_language").selected_text(LANGUAGES.iter().find(|(code,_)|*code==self.language).map(|(_,name)|*name).unwrap_or("English")).show_ui(ui,|ui|{for(code,name)in LANGUAGES{ui.selectable_value(&mut self.language,code.to_string(),*name);}});
-                    if previous!=self.language{search=Some(1);}if ui.small_button("API settings").clicked(){self.settings_open=true;}
+                    if previous!=self.language{search=Some(1);}if ui.add(egui::Button::new("API settings").small().min_size(egui::vec2(0.0, theme::CONTROL_SM))).clicked(){self.settings_open=true;}
                 });
             });ui.separator();
             ui.horizontal_top(|ui|{
                 ui.allocate_ui_with_layout(egui::vec2(265.0,330.0),egui::Layout::top_down(egui::Align::Min),|ui|{
                     ui.horizontal(|ui|{ui.strong("Search result");ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.strong("Year");});});
                     egui::ScrollArea::vertical().id_salt("candidate_list").max_height(280.0).show(ui,|ui|{
-                        for(index,result)in dialog.results.iter().enumerate(){if ui.add_sized([250.0,23.0],egui::Button::selectable(dialog.picked==Some(index),format!("{}  ({})",result.title,result.year())).truncate()).clicked()&&!saving{pick=Some(index);}}
+                        for(index,result)in dialog.results.iter().enumerate(){if ui.add_sized([250.0,theme::CONTROL_MD],egui::Button::selectable(dialog.picked==Some(index),format!("{}  ({})",result.title,result.year())).truncate()).clicked()&&!saving{pick=Some(index);}}
                         if dialog.searched&&dialog.results.is_empty()&&!searching{ui.label("No results. Edit the title and search again.");}
                     });
                     ui.horizontal(|ui|{
-                        if ui.add_enabled(!searching&&!saving&&dialog.page>1,egui::Button::new("‹")).clicked(){search=Some(dialog.page-1);}ui.label(format!("{} / {}",dialog.page,dialog.total_pages.max(1)));
-                        if ui.add_enabled(!searching&&!saving&&dialog.page<dialog.total_pages,egui::Button::new("›")).clicked(){search=Some(dialog.page+1);}
+                        if ui.add_enabled(!searching&&!saving&&dialog.page>1,egui::Button::new("Previous")).clicked(){search=Some(dialog.page-1);}ui.label(format!("{} / {}",dialog.page,dialog.total_pages.max(1)));
+                        if ui.add_enabled(!searching&&!saving&&dialog.page<dialog.total_pages,egui::Button::new("Next")).clicked(){search=Some(dialog.page+1);}
                     });
                 });ui.add_sized([8.0, 360.0], egui::Separator::default().vertical());
-                ui.vertical(|ui|{
-                    if searching||loading{ui.horizontal(|ui|{ui.spinner();ui.label(if searching{"Searching…"}else{"Loading candidate details…"});});}
+                ui.vertical(|ui|{ui.set_width(ui.available_width());
+                    if searching||loading{ui.horizontal(|ui|{theme::spinner(ui);ui.label(if searching{"Searching…"}else{"Loading candidate details…"});});}
                     if let Some(data)=&dialog.details{
                         ui.horizontal_top(|ui|{
                             ui.allocate_ui_with_layout(egui::vec2(145.0,210.0),egui::Layout::top_down(egui::Align::Min),|ui|{poster(ui,data,false,egui::vec2(140.0,205.0));});
-                            ui.vertical(|ui|{
+                            ui.vertical(|ui|{ui.set_width(ui.available_width());
                                 ui.heading(format!("{} ({})",data.identity.title,data.year.map(|y|y.to_string()).unwrap_or_else(||"—".into())));ui.label(&data.identity.original_title);
                                 if let Some(tagline)=&data.tagline{ui.label(RichText::new(tagline).italics());}
                                 egui::ScrollArea::vertical().id_salt("candidate_plot").max_height(155.0).show(ui,|ui|{ui.label(&data.identity.overview);});
@@ -428,15 +437,15 @@ impl TmdbUi {
                     }else if !searching&&!loading{ui.label("Select a candidate to preview its details.");}
                 });
             });
-            if let Some(error)=&dialog.error{ui.colored_label(egui::Color32::from_rgb(175,40,35),error);}ui.separator();ui.strong("Scrape following items");
+            if let Some(error)=&dialog.error{ui.colored_label(theme::palette(ui).danger,error);}ui.separator();ui.strong("Scrape following items");
             ui.add_enabled_ui(!saving,|ui|{
-                ui.horizontal_wrapped(|ui|{for field in Field::ALL{if *field==Field::MovieSet&&dialog.video.category==Category::Series{continue;}let mut chosen=self.options.fields.contains(field);if ui.checkbox(&mut chosen,field.label()).changed(){if chosen{self.options.fields.push(*field);}else{self.options.fields.retain(|f|f!=field);}}}});
-                ui.horizontal_wrapped(|ui|{if ui.small_button("Select all").clicked(){self.options.fields=Field::ALL.to_vec();}if ui.small_button("Select none").clicked(){self.options.fields.clear();}ui.checkbox(&mut self.options.only_missing,"Fill missing fields only");ui.checkbox(&mut self.options.write_nfo,"Write NFO");ui.checkbox(&mut self.options.replace_nfo,"Replace existing NFO/artwork (backup first)");});
+                ui.horizontal_wrapped(|ui|{for field in Field::ALL{if *field==Field::MovieSet&&dialog.video.category==Category::Series{continue;}let mut chosen=self.options.fields.contains(field);if theme::checkbox(ui,&mut chosen,field.label()).changed(){if chosen{self.options.fields.push(*field);}else{self.options.fields.retain(|f|f!=field);}}}});
+                ui.horizontal_wrapped(|ui|{if ui.add(egui::Button::new("Select all").small().min_size(egui::vec2(0.0, theme::CONTROL_SM))).clicked(){self.options.fields=Field::ALL.to_vec();}if ui.add(egui::Button::new("Select none").small().min_size(egui::vec2(0.0, theme::CONTROL_SM))).clicked(){self.options.fields.clear();}theme::checkbox(ui,&mut self.options.only_missing,"Fill missing fields only");theme::checkbox(ui,&mut self.options.write_nfo,"Write NFO");theme::checkbox(ui,&mut self.options.replace_nfo,"Replace existing NFO/artwork (backup first)");});
                 if dialog.video.category==Category::Series{ui.label(RichText::new("Applies to this TV show and its files. Individual episode titles and plots are not scraped yet.").small().weak());}
             });ui.separator();
             });
             ui.horizontal(|ui|{
-                if saving{ui.spinner();ui.label("Scraping selected fields and writing outputs…");}
+                if saving{theme::spinner(ui);ui.label("Scraping selected fields and writing outputs…");}
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                     if ui.add_enabled(!saving&&!searching&&!loading&&!locked&&dialog.details.is_some()&&!self.options.fields.is_empty(),egui::Button::new("OK — Scrape")).clicked(){confirm=true;}
                     if ui.add_enabled(!saving,egui::Button::new("Cancel")).clicked(){cancel=true;}if self.total>1&&ui.add_enabled(!saving,egui::Button::new("Skip")).clicked(){skip=true;}
@@ -476,9 +485,10 @@ impl TmdbUi {
 
     fn settings(&mut self, ctx: &egui::Context, mut db: Option<&mut LibraryDb>) {
         if self.settings_open {
-            egui::Window::new("TMDB settings & credits").open(&mut self.settings_open).default_width(500.0).show(ctx,|ui|{
+            egui::Window::new("TMDB settings & credits").open(&mut self.settings_open).default_width(500.0).max_height(ctx.content_rect().height() - 96.0).vscroll(true).show(ctx,|ui|{
+            theme::appearance(ui);
             let previous = self.show_missing_episodes;
-            if ui.add_enabled(db.is_some(),egui::Checkbox::new(&mut self.show_missing_episodes,"Show missing seasons and episodes")).changed() {
+            if ui.add_enabled_ui(db.is_some(), |ui| theme::checkbox(ui, &mut self.show_missing_episodes,"Show missing seasons and episodes")).inner.changed() {
                 if let Some(db) = db.as_deref_mut() {
                     if let Err(e) = db.set_show_missing_episodes(self.show_missing_episodes) {
                         self.show_missing_episodes = previous;
@@ -488,7 +498,7 @@ impl TmdbUi {
             }
             ui.weak("Compare expanded, matched shows with aired episodes on TMDB. Requires a token; missing entries are display only.");
             ui.separator();
-            ui.label("TMDB API Read Access Token");ui.add(egui::TextEdit::singleline(&mut self.token).password(true).desired_width(f32::INFINITY));ui.horizontal(|ui| {
+            ui.label("TMDB API Read Access Token");theme::text_edit(ui,egui::TextEdit::singleline(&mut self.token).password(true).desired_width(f32::INFINITY));ui.horizontal(|ui| {
     if ui.button("Save token").clicked() {
         self.token_status = Some(match media_shelf::credentials::save(&media_shelf::credentials::token_path(), &self.token) {
             Ok(()) => if self.token.trim().is_empty() { "Saved token removed.".into() } else { "Token saved. It will load automatically next time.".into() },

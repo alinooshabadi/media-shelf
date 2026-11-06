@@ -16,9 +16,9 @@ pub(super) enum SortColumn {
 fn folder_link(ui: &mut egui::Ui, label: &str, folder: &std::path::Path) -> Option<String> {
     let response = ui
         .add(
-            egui::Label::new(RichText::new(label).color(theme::ACCENT))
-                .truncate()
-                .sense(egui::Sense::click()),
+            egui::Button::new(RichText::new(label).color(theme::palette(ui).accent))
+                .frame(false)
+                .truncate(),
         )
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("Open containing folder\n{}", display_path(folder)));
@@ -386,12 +386,16 @@ mod tests {
     }
 
     #[test]
-    fn light_library_and_detail_tabs_render_at_supported_sizes() {
-        for (width, category) in [
-            (1080.0, Category::Movies),
-            (1380.0, Category::Movies),
-            (1080.0, Category::Series),
-            (1380.0, Category::Series),
+    fn library_and_detail_tabs_render_in_both_themes_at_supported_sizes() {
+        for (width, category, dark) in [
+            (1080.0, Category::Movies, false),
+            (1380.0, Category::Movies, false),
+            (1080.0, Category::Series, false),
+            (1380.0, Category::Series, false),
+            (1080.0, Category::Movies, true),
+            (1380.0, Category::Movies, true),
+            (1080.0, Category::Series, true),
+            (1380.0, Category::Series, true),
         ] {
             let identity = media_shelf::tmdb::TmdbMatch {
                 category,
@@ -423,7 +427,12 @@ mod tests {
             let mut app = fixture(video.clone());
             let ctx = egui::Context::default();
             theme::install(&ctx);
-            assert!(!ctx.style().visuals.dark_mode);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
+            assert_eq!(ctx.style().visuals.dark_mode, dark);
             for tab in 0..5 {
                 app.detail_tab = tab;
                 for _ in 0..3 {
@@ -676,6 +685,8 @@ impl App {
         egui::Window::new("Data sources")
             .open(&mut open)
             .default_width(650.0)
+            .max_height(ctx.content_rect().height() - 96.0)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.category, Category::Movies, "Movies");
@@ -689,7 +700,7 @@ impl App {
                         self.add_folder(path);
                     }
                     ui.horizontal(|ui| {
-                        ui.add(
+                        theme::text_edit(ui,
                             egui::TextEdit::singleline(&mut self.folder_input)
                                 .desired_width(470.0)
                                 .hint_text("Or paste a folder path"),
@@ -728,7 +739,7 @@ impl App {
                     }
                 }
                 if let Some(error) = &self.error {
-                    ui.colored_label(Color32::from_rgb(170, 35, 35), error);
+                    ui.colored_label(theme::palette(ui).danger, error);
                 }
             });
         self.sources_open = open;
@@ -750,9 +761,10 @@ impl App {
         };
         if ui
             .add(
-                egui::Label::new(text)
-                    .truncate()
-                    .sense(egui::Sense::click()),
+                egui::Button::new(text)
+                    .frame(false)
+                    .small()
+                    .min_size(egui::vec2(0.0, theme::CONTROL_SM)),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(hint)
@@ -836,13 +848,14 @@ impl App {
 
     fn library_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.add(
+            theme::text_edit(
+                ui,
                 egui::TextEdit::singleline(&mut self.filter)
                     .hint_text("Search library…")
-                    .desired_width((ui.available_width() - 115.0).max(120.0)),
+                    .desired_width((ui.available_width() - 148.0).max(120.0)),
             );
             egui::ComboBox::from_id_salt("filter")
-                .width(65.0)
+                .width(104.0)
                 .selected_text(["All", "Unscraped", "No artwork"][self.filter_mode])
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.filter_mode, 0, "All");
@@ -874,7 +887,14 @@ impl App {
         entries.sort_by(|a, b| self.compare_items(&self.videos[*a], &self.videos[*b]));
         ui.horizontal(|ui| {
             ui.weak(format!("{} items", entries.len()));
-            if ui.small_button("Select visible").clicked() {
+            if ui
+                .add(
+                    egui::Button::new("Select visible")
+                        .small()
+                        .min_size(egui::vec2(0.0, theme::CONTROL_SM)),
+                )
+                .clicked()
+            {
                 self.selection = entries
                     .iter()
                     .map(|i| self.videos[*i].path.clone())
@@ -882,7 +902,14 @@ impl App {
                 self.selected = entries.first().map(|i| self.videos[*i].path.clone());
                 self.selected_season = None;
             }
-            if ui.small_button("Clear selection").clicked() {
+            if ui
+                .add(
+                    egui::Button::new("Clear selection")
+                        .small()
+                        .min_size(egui::vec2(0.0, theme::CONTROL_SM)),
+                )
+                .clicked()
+            {
                 self.selection.clear();
                 self.selected = None;
                 self.selected_season = None;
@@ -905,7 +932,7 @@ impl App {
             .column(egui_extras::Column::initial(60.0))
             .column(egui_extras::Column::exact(66.0))
             .column(egui_extras::Column::exact(82.0))
-            .header(36.0, |mut row| {
+            .header(theme::CONTROL_SM, |mut row| {
                 for (column, label) in [
                     (SortColumn::Title, "Title"),
                     (SortColumn::Year, "Year"),
@@ -919,7 +946,7 @@ impl App {
                 }
             })
             .body(|body| {
-                body.rows(44.0, entries.len(), |mut row| {
+                body.rows(theme::CONTROL_LG, entries.len(), |mut row| {
                     let video = &self.videos[entries[row.index()]];
                     let selected = self.selection.contains(&video.path)
                         || self.selected.as_ref() == Some(&video.path);
@@ -955,11 +982,11 @@ impl App {
                     });
                     row.col(|ui| {
                         let (label, color) = if video.metadata.is_some() {
-                            ("Scraped", Color32::from_rgb(60, 125, 102))
+                            ("Scraped", theme::palette(ui).success)
                         } else if video.tmdb.is_some() {
-                            ("Matched", theme::ACCENT)
+                            ("Matched", theme::palette(ui).accent)
                         } else {
-                            ("New", theme::MUTED)
+                            ("New", theme::palette(ui).secondary)
                         };
                         let response = ui.label(RichText::new(label).size(12.0).color(color));
                         response.on_hover_text(format!(
@@ -1068,7 +1095,7 @@ impl App {
                     );
                     let Some(loaded) = self.series_tree.shows.get(folder) else {
                         ui.horizontal(|ui| {
-                            ui.spinner();
+                            theme::spinner(ui);
                             ui.weak("Loading episodes…");
                         });
                         return;
@@ -1078,7 +1105,7 @@ impl App {
                     }
                     if loaded.checking_metadata {
                         ui.horizontal(|ui| {
-                            ui.spinner();
+                            theme::spinner(ui);
                             ui.weak(if self.tmdb_ui.show_missing_episodes {
                                 "Checking missing episodes on TMDB…"
                             } else {
@@ -1151,7 +1178,7 @@ impl App {
                                         }
                                     } else if let Some(title) = missing_title {
                                         ui.colored_label(
-                                            Color32::from_rgb(170, 85, 55),
+                                            theme::palette(ui).warning,
                                             format!("{number}. {title} · Missing"),
                                         );
                                     }
@@ -1165,12 +1192,18 @@ impl App {
                     }
                     if !loaded.warnings.is_empty() {
                         ui.colored_label(
-                            Color32::from_rgb(170, 35, 35),
+                            theme::palette(ui).danger,
                             "Episode check needs attention.",
                         )
                         .on_hover_text(loaded.warnings.join("\n"));
                     }
-                    retry = ui.small_button("Refresh episodes").clicked();
+                    retry = ui
+                        .add(
+                            egui::Button::new("Refresh episodes")
+                                .small()
+                                .min_size(egui::vec2(0.0, theme::CONTROL_SM)),
+                        )
+                        .clicked();
                 });
         let action = item_menu(&header.inner, locked);
         if header.inner.secondary_clicked() || action.is_some() {
@@ -1434,7 +1467,7 @@ impl App {
                 ui.selectable_value(&mut self.detail_tab, index, *label);
             }
         });
-        ui.add_space(20.0);
+        ui.add_space(theme::REGION);
         egui::ScrollArea::vertical()
             .id_salt("detail_scroll")
             .auto_shrink([false, false])
@@ -1447,7 +1480,7 @@ impl App {
                         if let Some(data) = data {
                             egui::Grid::new("people")
                                 .num_columns(2)
-                                .spacing([32.0, 14.0])
+                                .spacing([32.0, 16.0])
                                 .show(ui, |ui| {
                                     for p in data.crew.iter().chain(data.cast.iter()) {
                                         ui.label(&p.name);
@@ -1545,7 +1578,7 @@ impl App {
                         ) {
                             ui.weak("No poster found.");
                         }
-                        ui.add_space(20.0);
+                        ui.add_space(theme::REGION);
                         ui.heading("Fanart");
                         let w = ui.available_width().min(640.0);
                         if !matching::video_poster(ui, &video, true, egui::vec2(w, w * 9.0 / 16.0))
@@ -1579,7 +1612,7 @@ impl App {
                                 |ui| {
                                     if !matching::video_poster(ui, &video, false, poster_size) {
                                         egui::Frame::new()
-                                            .fill(theme::CARD)
+                                            .fill(theme::palette(ui).muted_surface)
                                             .corner_radius(10)
                                             .show(ui, |ui| {
                                                 ui.allocate_ui_with_layout(
@@ -1600,7 +1633,9 @@ impl App {
                                 ui.set_width(ui.available_width());
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(title(&video)).size(32.0).strong(),
+                                        RichText::new(title(&video))
+                                            .size(28.0)
+                                            .family(egui::FontFamily::Name("Geist".into())),
                                     )
                                     .wrap(),
                                 );
@@ -1627,8 +1662,10 @@ impl App {
                                         if let Some(r) = data.rating {
                                             ui.label(
                                                 RichText::new(format!("{r:.1} / 10"))
-                                                    .color(theme::ACCENT)
-                                                    .strong(),
+                                                    .color(theme::palette(ui).accent)
+                                                    .family(egui::FontFamily::Name(
+                                                        "Inter medium".into(),
+                                                    )),
                                             )
                                             .on_hover_text(format!(
                                                 "{} votes",
@@ -1643,7 +1680,7 @@ impl App {
                                         ui.add(
                                             egui::Label::new(
                                                 RichText::new(data.genres.join("  ·  "))
-                                                    .color(theme::MUTED),
+                                                    .color(theme::palette(ui).secondary),
                                             )
                                             .wrap(),
                                         );
@@ -1655,7 +1692,7 @@ impl App {
                                                 egui::Label::new(
                                                     RichText::new(tagline)
                                                         .italics()
-                                                        .color(theme::MUTED),
+                                                        .color(theme::palette(ui).secondary),
                                                 )
                                                 .wrap(),
                                             );
@@ -1666,11 +1703,7 @@ impl App {
                                 let locked = self.item_actions_locked();
                                 ui.horizontal_wrapped(|ui| {
                                     if ui
-                                        .add_enabled(
-                                            !locked,
-                                            egui::Button::new("Search & scrape")
-                                                .fill(egui::Color32::from_rgb(222, 233, 250)),
-                                        )
+                                        .add_enabled(!locked, theme::primary(ui, "Search & scrape"))
                                         .clicked()
                                     {
                                         self.tmdb_ui.open_many(self.selected_videos(false), false);
@@ -1687,16 +1720,19 @@ impl App {
                                 });
                             });
                         });
-                        ui.add_space(28.0);
-                        ui.label(RichText::new("Overview").size(18.0).strong());
+                        ui.add_space(theme::SECTION);
+                        ui.label(
+                            RichText::new("Overview")
+                                .size(17.0)
+                                .family(egui::FontFamily::Name("Inter medium".into())),
+                        );
                         ui.add_space(4.0);
                         if let Some(data) = data {
                             ui.add(egui::Label::new(&data.identity.overview).wrap());
                             ui.add_space(24.0);
                             egui::Frame::new()
-                                .fill(theme::PANEL)
-                                .corner_radius(10)
-                                .inner_margin(18)
+                                .fill(theme::palette(ui).surface)
+                                .inner_margin(0)
                                 .show(ui, |ui| {
                                     ui.set_width((ui.available_width()).max(100.0));
                                     egui::Grid::new("metadata_details")
@@ -1757,7 +1793,7 @@ impl App {
                                 });
                             }
                         }
-                        ui.add_space(20.0);
+                        ui.add_space(theme::REGION);
                         if let Some(folder) = if video.is_folder {
                             Some(video.path.as_path())
                         } else {
@@ -1776,6 +1812,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        let colors = theme::Palette::new(ctx.style().visuals.dark_mode);
         self.poll();
         self.series_tree.poll(ctx);
         let scanning = self.receiver.is_some();
@@ -1786,23 +1823,23 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL)
-                    .inner_margin(egui::Margin::symmetric(20, 14)),
+                    .fill(colors.surface)
+                    .inner_margin(egui::Margin::symmetric(24, 16)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("media shelf")
+                        RichText::new("Media Shelf")
                             .size(22.0)
-                            .strong()
-                            .color(theme::TEXT),
+                            .family(egui::FontFamily::Name("Inter medium".into()))
+                            .color(theme::palette(ui).text),
                     );
                     ui.separator();
                     if scanning {
                         if ui.button("Cancel update").clicked() {
                             self.cancel.store(true, Ordering::Relaxed);
                         }
-                        ui.spinner();
+                        theme::spinner(ui);
                     } else if ui
                         .add_enabled(
                             !locked && !self.sources.is_empty(),
@@ -1816,14 +1853,14 @@ impl eframe::App for App {
                     if ui
                         .add_enabled(
                             !locked && !targets.is_empty(),
-                            egui::Button::new("Search & scrape"),
+                            theme::primary(ui, "Search & scrape"),
                         )
                         .clicked()
                     {
                         self.tmdb_ui.open_many(targets.clone(), false);
                     }
                     ui.add_enabled_ui(!locked, |ui| {
-                        ui.menu_button("▾", |ui| {
+                        ui.menu_button("More", |ui| {
                             if ui
                                 .add_enabled(
                                     !targets.is_empty(),
@@ -1899,18 +1936,25 @@ impl eframe::App for App {
             .default_width(440.0)
             .min_width(420.0)
             .max_width(600.0)
-            .frame(egui::Frame::new().fill(theme::PANEL).inner_margin(18))
+            .frame(egui::Frame::new().fill(colors.surface).inner_margin(16))
             .resizable(true)
             .show(ctx, |ui| {
                 self.library_list(ui);
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(24))
+            .frame(egui::Frame::new().fill(colors.background).inner_margin(24))
             .show(ctx, |ui| {
                 if let Some(error) = self.error.clone() {
                     ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(Color32::from_rgb(170, 35, 35), error);
-                        if ui.small_button("Dismiss").clicked() {
+                        ui.colored_label(theme::palette(ui).danger, error);
+                        if ui
+                            .add(
+                                egui::Button::new("Dismiss")
+                                    .small()
+                                    .min_size(egui::vec2(0.0, theme::CONTROL_SM)),
+                            )
+                            .clicked()
+                        {
                             self.error = None;
                         }
                     });

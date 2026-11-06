@@ -132,7 +132,7 @@ impl FileTools {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spinner();
+                        super::theme::spinner(ui);
                         ui.label("Working…");
                     });
                 });
@@ -163,11 +163,11 @@ impl FileTools {
                         egui::ScrollArea::vertical().id_salt("file_moves").max_height(330.0).show(ui,|ui|{
                             for (index,item) in plan.moves.iter().enumerate(){
                                 ui.horizontal(|ui|{
-                                    ui.add_enabled(!restoring,egui::Checkbox::without_text(&mut chosen[index]));
+                                    ui.add_enabled_ui(!restoring, |ui| super::theme::checkbox(ui, &mut chosen[index], ""));
                                     ui.vertical(|ui|{
                                         let (from,to)=if restoring{(&item.to,&item.from)}else{(&item.from,&item.to)};
                                         ui.label(RichText::new(from.display().to_string()).small());
-                                        ui.label(RichText::new(format!("→ {}",to.display())).strong());
+                                        ui.label(RichText::new(format!("→ {}",to.display())).family(egui::FontFamily::Name("Inter medium".into())));
                                     });
                                 });ui.separator();
                             }

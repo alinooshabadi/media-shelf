@@ -31,20 +31,20 @@ impl App {
         ui.separator();
         let Some(show) = self.series_tree.shows.get(folder) else {
             ui.horizontal(|ui| {
-                ui.spinner();
+                theme::spinner(ui);
                 ui.label("Loading episodes…");
             });
             return;
         };
         if show.checking_metadata {
             ui.horizontal(|ui| {
-                ui.spinner();
+                theme::spinner(ui);
                 ui.weak("Loading episode details…");
             });
         }
         if !show.warnings.is_empty() {
             ui.colored_label(
-                Color32::from_rgb(170, 85, 55),
+                theme::palette(ui).warning,
                 "Some episode details are unavailable.",
             )
             .on_hover_text(show.warnings.join("\n"));
@@ -100,7 +100,7 @@ impl App {
             .column(egui_extras::Column::remainder().at_least(100.0))
             .column(egui_extras::Column::exact(100.0))
             .column(egui_extras::Column::exact(60.0))
-            .header(28.0, |mut row| {
+            .header(theme::CONTROL_SM, |mut row| {
                 for label in ["Episode", "Title", "Aired", "Rating"] {
                     row.col(|ui| {
                         ui.strong(label);
@@ -119,7 +119,7 @@ impl App {
                     });
                     row.col(|ui| {
                         let label = egui::Label::new(if path.is_none() {
-                            RichText::new(title).color(Color32::from_rgb(170, 85, 55))
+                            RichText::new(title).color(theme::palette(ui).warning)
                         } else {
                             RichText::new(title)
                         })
