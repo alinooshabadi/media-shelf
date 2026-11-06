@@ -191,7 +191,8 @@ pub fn install(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(14.0, 8.0);
         style.spacing.interact_size = egui::vec2(CONTROL_MD, CONTROL_MD);
-        style.spacing.window_margin = 24.into();
+        // Keep title-bar icons outside egui's fixed 32-point double-click inset.
+        style.spacing.window_margin = egui::Margin::symmetric(24, 6);
         style.spacing.menu_margin = 6.into();
         style.spacing.indent = 16.0;
         style.spacing.icon_width = 16.0;

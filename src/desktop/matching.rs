@@ -12,6 +12,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settings_close_button_dismisses_the_window() {
+        for (dark, offset) in [
+            (false, egui::vec2(-5.0, -5.0)),
+            (false, egui::Vec2::ZERO),
+            (false, egui::vec2(5.0, 5.0)),
+            (true, egui::vec2(-5.0, -5.0)),
+            (true, egui::Vec2::ZERO),
+            (true, egui::vec2(5.0, 5.0)),
+        ] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx);
+            ctx.set_theme(if dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            });
+            let mut chooser = TmdbUi::new();
+            chooser.token.clear();
+            chooser.settings_open = true;
+            let render = |chooser: &mut TmdbUi, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1380.0, 880.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| chooser.settings(ctx, None),
+                )
+            };
+            for _ in 0..3 {
+                render(&mut chooser, vec![]);
+            }
+            let output = render(&mut chooser, vec![]);
+            let close = output
+                .shapes
+                .iter()
+                .find_map(|shape| match shape.shape {
+                    egui::Shape::LineSegment { points, .. }
+                        if ((points[1].x - points[0].x).abs() - 12.0).abs() < 0.1
+                            && ((points[1].y - points[0].y).abs() - 12.0).abs() < 0.1 =>
+                    {
+                        Some(points[0] + (points[1] - points[0]) * 0.5)
+                    }
+                    _ => None,
+                })
+                .expect("Settings must paint its close icon");
+            let close = close + offset;
+            for pressed in [true, false] {
+                render(
+                    &mut chooser,
+                    vec![
+                        egui::Event::PointerMoved(close),
+                        egui::Event::PointerButton {
+                            pos: close,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            assert!(
+                !chooser.settings_open,
+                "Clicking the painted close icon must dismiss Settings, dark={dark}"
+            );
+        }
+    }
+
+    #[test]
     fn movie_and_show_chooser_render_without_committing() {
         for (category, height, dark) in [
             (Category::Movies, 880.0, false),
