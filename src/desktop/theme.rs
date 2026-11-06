@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, FontFamily, FontId, Stroke};
 
-// CUI src/cui_theme.c, revision 7bfb39d: neutral levels and the blue accent.
+// Shared desktop geometry and semantic color tokens.
 pub const RADIUS_CONTROL: u8 = 10;
 pub const RADIUS_PANEL: u8 = 14;
 pub const RADIUS_SURFACE: u8 = 18;
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn cui_tokens_and_both_themes_are_installed() {
+    fn design_tokens_and_both_themes_are_installed() {
         let ctx = egui::Context::default();
         install(&ctx);
         assert_eq!(oklch(1.0, 0.0, 0.0), Color32::WHITE);
