@@ -1,7 +1,7 @@
 # Media Shelf
 
 <p>
-  <a href="https://github.com/alinooshabadi/media-shelf/blob/main/Cargo.toml"><img alt="Version 0.6.8" src="https://img.shields.io/badge/version-0.6.8-3865a9?style=for-the-badge" height="22"></a>
+  <a href="https://github.com/alinooshabadi/media-shelf/blob/main/Cargo.toml"><img alt="Version 0.6.9" src="https://img.shields.io/badge/version-0.6.9-3865a9?style=for-the-badge" height="22"></a>
   <a href="https://github.com/alinooshabadi/media-shelf/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/alinooshabadi/media-shelf?style=for-the-badge" height="22"></a>
   <a href="#getting-started"><img alt="Windows and macOS desktop" src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS-3865a9?style=for-the-badge" height="22"></a>
   <a href="https://www.rust-lang.org/"><img alt="Built with Rust" src="https://img.shields.io/badge/built_with-Rust-dea584?style=for-the-badge" height="22"></a>
@@ -13,6 +13,27 @@
 A desktop app for organizing local movie and TV collections on Windows and macOS, built with Rust and egui.
 
 [User guide](docs/USER_GUIDE.md) · [Releases](https://github.com/alinooshabadi/media-shelf/releases)
+
+## Screenshots
+
+Movie library and details in the running macOS app:
+
+![Movie library in light mode](docs/images/library-light.png)
+
+<details>
+<summary>Dark theme and season browsing (sample library)</summary>
+
+![Movie library in dark mode with sample data](docs/images/library-dark.png)
+
+![Season and episode table in dark mode with sample data](docs/images/season-dark.png)
+
+</details>
+
+## Downloads
+
+[v0.6.9 for macOS on Apple silicon](https://github.com/alinooshabadi/media-shelf/releases/tag/v0.6.9) includes a zipped app bundle and SHA-256 checksum. Extract the ZIP and open **Media Shelf.app**.
+
+Windows users can build from source or download the [previous Windows x64 release](https://github.com/alinooshabadi/media-shelf/releases/tag/v0.6.8).
 
 ## Features
 

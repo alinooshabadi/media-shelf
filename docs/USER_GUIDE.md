@@ -1,12 +1,12 @@
 # User guide
 
-A Rust media manager for Windows and macOS with a minimal light interface, a library/detail layout and
+A Rust media manager for Windows and macOS with light and dark themes, a library/detail layout and
 a separate search, preview, field-selection, and scrape workflow.
 
 ## Run
 
-Close any older running version, then double-click `MediaShelf-v0.6.8.exe`
-next to this project folder (or `MediaShelf.exe` if it was replaced).
+Close any older running version, then launch the Windows executable downloaded
+from a release that provides a Windows build (or `MediaShelf.exe` from your local build).
 On macOS, open **Media Shelf.app** instead. In the app:
 
 1. Choose **Movies** or **TV shows**.
