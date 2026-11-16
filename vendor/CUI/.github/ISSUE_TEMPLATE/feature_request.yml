@@ -1,0 +1,49 @@
+name: Feature or component request
+description: Propose a new component or a change in behavior. See docs/CONTRIBUTING.md.
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: author
+    attributes:
+      label: Who wrote this request?
+      options:
+        - Human
+        - Human with AI assistance
+        - AI agent
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: AI model and version
+      description: The exact model and the tool that ran it, or "none".
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to build, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What the API or the component would look like. A short C sketch helps.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including what you can do with existing components or a canvas today.
+  - type: checkboxes
+    id: honesty
+    attributes:
+      label: Confirmation
+      options:
+        - label: I checked the existing components (docs or live docs) and this is not already possible.
+          required: true
+        - label: If an AI was involved, its exact model is named above.
+          required: true

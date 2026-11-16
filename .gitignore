@@ -1,4 +1,7 @@
 /target/
+/cargo/
+/.cargo/
+/.local/
 *.exe
 *.sqlite3
 *.sqlite3-*
@@ -9,3 +12,5 @@ tmdb-token.dat
 # Local development notes
 /TMM-FLOW.md
 /VERIFICATION.md
+/vendor/CUI/.git/
+/vendor/CUI/build/

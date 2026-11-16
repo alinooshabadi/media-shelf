@@ -1,0 +1,22 @@
+[package]
+name = "media-shelf-ui"
+version = "0.6.9"
+edition = "2024"
+publish = false
+
+[lib]
+name = "media_shelf_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "media-shelf"
+path = "src/main.rs"
+
+[dependencies]
+media-shelf = { path = "../../" }
+serde_json = "1"
+walkdir = "2"
+tempfile = "3"
+
+[build-dependencies]
+cc = "1"

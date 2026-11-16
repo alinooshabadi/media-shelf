@@ -1,0 +1,55 @@
+name: Docs site
+
+# Builds the live docs (web/) and publishes them to GitHub Pages:
+# https://yappologistic.github.io/CUI/
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deployment at a time; a newer push replaces a pending one
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang and LLVM tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld llvm
+          # wasm-ld and llvm-ar live in the versioned LLVM folder
+          echo "$(ls -d /usr/lib/llvm-*/bin | sort -V | tail -1)" >> "$GITHUB_PATH"
+      - name: Build
+        run: web/tools/build.sh
+      - name: Check the page data
+        # every component page has a description, well-formed options and a keyboard section
+        run: node web/tools/check_catalog.mjs
+      - name: Collect the files
+        # the site links to assets/fonts, docs/images and examples; copy them as real files
+        run: cp -rL web/site _site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

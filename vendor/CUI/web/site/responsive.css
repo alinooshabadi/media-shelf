@@ -1,0 +1,60 @@
+/* ==========================================================================
+   Responsive: the site chrome and previews on tablets and phones.
+   Linked after style.css; js/responsive.js adds the menu button and the
+   drawer behaviour. Previews themselves lay scenes out at the width they get
+   (js/preview.js), so this file only has to give them that width.
+   ========================================================================== */
+
+/* never let one wide element widen the whole page on a phone */
+.main { min-width: 0; }
+
+/* the menu button that opens the sidebar as a drawer (added by responsive.js) */
+.nav-toggle { display: none; }
+
+@media (max-width: 860px) {
+  .doc table { display: block; overflow-x: auto; max-width: 100%; }   /* option tables scroll instead of widening the page */
+  .nav-toggle { display: grid; margin-left: -6px; }
+  body.nav-open .sidebar {
+    display: flex;
+    position: fixed; top: var(--topbar-h); left: 0; bottom: 0; z-index: 45;
+    width: min(300px, 86vw); height: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    box-shadow: var(--shadow-float);
+    animation: nav-in var(--t-enter, 280ms) var(--ease, ease-out);
+  }
+  .nav-scrim {
+    position: fixed; inset: var(--topbar-h) 0 0 0; z-index: 44;
+    background: rgb(0 0 0 / 0.32);
+    animation: scrim-in var(--t-enter, 280ms) var(--ease, ease-out);
+  }
+  body.nav-open { overflow: hidden; }
+
+  /* previews: light and dark stack, the stage keeps a small margin */
+  .stage.pair { grid-template-columns: 1fr; }
+  .stage.pair > .half + .half { border-left: 0; border-top: 1px solid var(--border); }
+  .stage { padding: 20px 16px; }
+  .stage.pair > .half { padding: 28px 12px 16px; }
+  .pv-tools { margin-left: 0; flex-wrap: wrap; }
+}
+@keyframes nav-in { from { transform: translateX(-12px); opacity: 0; } }
+@keyframes scrim-in { from { opacity: 0; } }
+
+@media (max-width: 640px) {
+  .topnav { flex: 1 1 auto; }
+  .page { padding: 20px 16px 56px; }
+  .page.wide { padding: 12px 12px 0; }
+  .page h1 { overflow-wrap: anywhere; }
+  .stage { padding: 16px 12px; border-radius: var(--radius-panel, 14px); }
+  .stage.flush, .stage.tight { padding: 0; }
+  .canvas-wrap .resize { display: none; }       /* a phone resizes by rotating; the preview follows */
+  .app-head { gap: 8px; }
+  .app-head .lede { flex-basis: 100%; }
+  .app-head .seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .app-view .stage { border-radius: 0; border-left: 0; border-right: 0; }
+  .palette { width: calc(100vw - 16px) !important; max-width: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.nav-open .sidebar, .nav-scrim { animation: none; }
+}

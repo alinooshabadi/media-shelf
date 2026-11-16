@@ -1,0 +1,123 @@
+name: Bug report
+description: Something is wrong. Every claim needs evidence; see docs/CONTRIBUTING.md.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Humans and AI agents both use this form. Fill in every field honestly. Label each claim as **verified** (you ran it, output below), **inferred** (from reading code, cite file:line) or **unverified**. See [CONTRIBUTING.md](https://github.com/yappologistic/CUI/blob/master/docs/CONTRIBUTING.md).
+  - type: dropdown
+    id: author
+    attributes:
+      label: Who wrote this report?
+      options:
+        - Human
+        - Human with AI assistance
+        - AI agent
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: AI model and version
+      description: The exact model, for example "Claude Opus 5.5 (claude-opus-5-5)". Several models? List each and what it did. Write "none" if no AI was involved.
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: AI tool and role
+      description: The app or harness (Claude Code, Cursor, Copilot, a script...) and what the AI did (found, analyzed, wrote this report). Write "none" if no AI was involved.
+    validations:
+      required: true
+  - type: dropdown
+    id: review
+    attributes:
+      label: Did a human read and check this report before posting?
+      options:
+        - "Yes"
+        - "No"
+        - Not applicable (written by a human)
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What is wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        OS and version:
+        Compiler and version (cc --version):
+        CUI commit (git rev-parse --short HEAD):
+        Window backend (CUI_PLATFORM):
+        Renderer (OpenGL or CUI_RENDERER=software):
+        Display scale:
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal C program is best. Otherwise the exact example and the clicks or keys that trigger it.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Output, crash logs, sanitizer reports, pasted verbatim from runs you did yourself. Cut long output with [...]. Attach screenshots below the code block if relevant.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: reproduced
+    attributes:
+      label: Did you reproduce this yourself?
+      options:
+        - Yes, every time I tried
+        - Yes, sometimes (say how often below)
+        - No, found by reading code
+        - No, reported by someone else
+    validations:
+      required: true
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Analysis (optional)
+      description: If you know the cause, point to the file, line and commit, and label it verified or inferred.
+  - type: textarea
+    id: unchecked
+    attributes:
+      label: What you did not check
+      description: Platforms, renderers or cases you did not try, and how confident you are.
+    validations:
+      required: true
+  - type: checkboxes
+    id: honesty
+    attributes:
+      label: Confirmation
+      options:
+        - label: Every output above is pasted verbatim from a run I (or my agent) actually did, not reconstructed.
+          required: true
+        - label: Every claim is labeled verified, inferred or unverified.
+          required: true
+        - label: If an AI was involved, its exact model is named above.
+          required: true

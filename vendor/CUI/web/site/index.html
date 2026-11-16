@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CUI: native UI components for C</title>
+<meta name="description" content="About 190 native UI components for C, compiled to machine code with no browser or runtime inside. Windows, macOS, Linux and the web. A complete app is about 250 KB.">
+<link rel="canonical" href="https://yappologistic.github.io/CUI/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="CUI">
+<meta property="og:title" content="CUI: native UI components for C">
+<meta property="og:description" content="About 190 native UI components for C, compiled to machine code with no browser or runtime inside. Windows, macOS, Linux and the web. A complete app is about 250 KB.">
+<meta property="og:url" content="https://yappologistic.github.io/CUI/">
+<meta property="og:image" content="https://yappologistic.github.io/CUI/img/social.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="responsive.css">
+<script>
+  document.documentElement.classList.add('js');   // the plain text version of a page is for readers without JavaScript
+  // apply the saved theme before first paint
+  try {
+    const s = JSON.parse(localStorage.getItem('cui-web-settings') || '{}');
+    const m = s.theme || 'system';
+    const dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch (e) {}
+</script>
+<script src="catalog.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <svg class="brand-mark" viewBox="0 0 200 200" fill="currentColor" aria-hidden="true" focusable="false"><g><rect x="45" y="0" width="20" height="20" rx="4" fill-opacity="0.3"/><rect x="67.5" y="0" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="90" y="0" width="20" height="20" rx="4" fill-opacity="0.75"/><rect x="112.5" y="0" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="135" y="0" width="20" height="20" rx="4" fill-opacity="0.3"/><rect x="22.5" y="22.5" width="20" height="20" rx="4" fill-opacity="0.56"/><rect x="45" y="22.5" width="20" height="20" rx="4"/><rect x="67.5" y="22.5" width="20" height="20" rx="4"/><rect x="90" y="22.5" width="20" height="20" rx="4"/><rect x="112.5" y="22.5" width="20" height="20" rx="4"/><rect x="135" y="22.5" width="20" height="20" rx="4"/><rect x="157.5" y="22.5" width="20" height="20" rx="4" fill-opacity="0.42"/><rect x="0" y="45" width="20" height="20" rx="4" fill-opacity="0.3"/><rect x="22.5" y="45" width="20" height="20" rx="4"/><rect x="45" y="45" width="20" height="20" rx="4" fill-opacity="0.95"/><rect x="67.5" y="45" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="90" y="45" width="20" height="20" rx="4" fill-opacity="0.25"/><rect x="112.5" y="45" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="135" y="45" width="20" height="20" rx="4" fill-opacity="0.62"/><rect x="0" y="67.5" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="22.5" y="67.5" width="20" height="20" rx="4"/><rect x="45" y="67.5" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="0" y="90" width="20" height="20" rx="4" fill-opacity="0.75"/><rect x="22.5" y="90" width="20" height="20" rx="4"/><rect x="45" y="90" width="20" height="20" rx="4" fill-opacity="0.25"/><rect x="0" y="112.5" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="22.5" y="112.5" width="20" height="20" rx="4"/><rect x="45" y="112.5" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="0" y="135" width="20" height="20" rx="4" fill-opacity="0.3"/><rect x="22.5" y="135" width="20" height="20" rx="4"/><rect x="45" y="135" width="20" height="20" rx="4" fill-opacity="0.95"/><rect x="67.5" y="135" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="90" y="135" width="20" height="20" rx="4" fill-opacity="0.25"/><rect x="112.5" y="135" width="20" height="20" rx="4" fill-opacity="0.45"/><rect x="135" y="135" width="20" height="20" rx="4" fill-opacity="0.62"/><rect x="22.5" y="157.5" width="20" height="20" rx="4" fill-opacity="0.56"/><rect x="45" y="157.5" width="20" height="20" rx="4"/><rect x="67.5" y="157.5" width="20" height="20" rx="4"/><rect x="90" y="157.5" width="20" height="20" rx="4"/><rect x="112.5" y="157.5" width="20" height="20" rx="4"/><rect x="135" y="157.5" width="20" height="20" rx="4"/><rect x="157.5" y="157.5" width="20" height="20" rx="4" fill-opacity="0.42"/><rect x="45" y="180" width="20" height="20" rx="4" fill-opacity="0.3"/><rect x="67.5" y="180" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="90" y="180" width="20" height="20" rx="4" fill-opacity="0.75"/><rect x="112.5" y="180" width="20" height="20" rx="4" fill-opacity="0.67"/><rect x="135" y="180" width="20" height="20" rx="4" fill-opacity="0.3"/></g></svg>
+    <span class="brand-name">CUI</span>
+  </a>
+  <nav class="topnav" id="topnav">
+    <a href="#/" data-nav="home">Overview</a>
+    <a href="#/guide/getting-started" data-nav="guide">Guide</a>
+    <a href="#/components" data-nav="components">Components</a>
+    <a href="#/showcase" data-nav="showcase">Showcase</a>
+    <a href="#/apps" data-nav="apps">Apps</a>
+    <a href="#/changelog" data-nav="changelog">Changelog</a>
+  </nav>
+  <div class="spacer"></div>
+  <button class="search-trigger" id="search-open" aria-label="Search">
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <span>Search…</span><kbd>Ctrl K</kbd>
+  </button>
+  <a class="icon-btn" href="https://github.com/yappologistic/CUI" target="_blank" rel="noreferrer" aria-label="Source code" title="Source code">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+  </a>
+  <button class="icon-btn" id="theme-toggle" aria-label="Switch theme"></button>
+  <button class="icon-btn" id="settings-open" aria-label="Settings" aria-haspopup="dialog">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+  </button>
+</header>
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="filter-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="filter" id="filter" type="search" placeholder="Filter" aria-label="Filter the sidebar" autocomplete="off">
+      </div>
+    </div>
+    <nav class="nav" id="nav" aria-label="Sections"></nav>
+  </aside>
+  <main class="main" id="main"><div class="page static">
+    <h1>CUI: native UI components for C</h1>
+    <p>About 190 components, compiled to machine code with no browser or runtime inside. Windows, macOS, Linux and the web, from one C99 codebase. A complete app is about 250 KB.</p>
+    <p>This site runs every component live, which needs JavaScript. The text of every page is here without it:</p>
+    <ul>
+      <li><a href="guide/getting-started/">Getting started</a></li>
+      <li><a href="guide/tutorial/">Tutorial: build a to-do app</a></li>
+      <li><a href="components/">All components</a></li>
+      <li><a href="showcase/">Showcase</a></li>
+      <li><a href="apps/">Example apps</a></li>
+      <li><a href="changelog/">Changelog</a></li>
+      <li><a href="https://github.com/yappologistic/CUI">Source on GitHub</a></li>
+    </ul>
+  </div></main>
+</div>
+<div class="toast-host" id="toasts" aria-live="polite"></div>
+<script type="module" src="js/app.js"></script>
+<script type="module" src="js/responsive.js"></script>
+</body>
+</html>

@@ -1,11 +1,11 @@
+[workspace]
+members = ["ui/media-shelf-ui"]
+resolver = "2"
+
 [package]
 name = "media-shelf"
 version = "0.6.9"
 edition = "2024"
-
-[features]
-default = ["desktop"]
-desktop = ["dep:eframe", "dep:rfd", "dep:egui_extras"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -17,9 +17,6 @@ regex = "1"
 roxmltree = "0.20"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 tempfile = "3"
-eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"], optional = true }
-rfd = { version = "0.15", optional = true }
-egui_extras = { version = "0.33", default-features = false, features = ["svg", "image", "http", "file"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Foundation"] }

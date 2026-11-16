@@ -1,0 +1,162 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# a newer push to the same branch makes the older run redundant
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.cc }}, ${{ matrix.platform }}, shaping ${{ matrix.shaping }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc, platform: x11, shaping: OFF }
+          - { cc: gcc, platform: x11, shaping: ON }
+          - { cc: clang, platform: x11, shaping: OFF }
+          - { cc: clang, platform: x11, shaping: ON }
+          - { cc: gcc, platform: sdl2, shaping: OFF }
+          - { cc: gcc, platform: sdl2, shaping: ON }
+          - { cc: gcc, platform: glfw, shaping: OFF }
+          - { cc: gcc, platform: glfw, shaping: ON }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build libx11-dev libgl-dev xvfb mesa-utils libgl1-mesa-dri libsdl2-dev libglfw3-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCUI_PLATFORM=${{ matrix.platform }} -DCUI_TEXT_SHAPING=${{ matrix.shaping }}
+      - name: Build
+        run: cmake --build build
+      - name: Unit and render tests
+        run: ctest --test-dir build --output-on-failure
+      - name: App smoke test (OpenGL)
+        run: xvfb-run -a -s "-screen 0 1400x1000x24" ./build/tests/cui_app_smoke build/smoke-gl.png
+      - name: App smoke test (software)
+        env:
+          CUI_RENDERER: software
+        run: xvfb-run -a -s "-screen 0 1400x1000x24" ./build/tests/cui_app_smoke build/smoke-sw.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.cc }}-${{ matrix.platform }}-${{ matrix.shaping }}-screenshots
+          path: build/**/*.png
+          if-no-files-found: ignore
+
+  sanitizers:
+    name: Linux (ASan + UBSan, shaping ${{ matrix.shaping }})
+    strategy:
+      matrix:
+        shaping: [OFF, ON]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build libx11-dev
+      - name: Build with sanitizers
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang -DCUI_TEXT_SHAPING=${{ matrix.shaping }} \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+  amalgamation:
+    name: Single-file distribution (${{ matrix.cc }})
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libx11-dev
+      - name: Generate cui.h, cui.c and cui_single.h
+        run: python3 tools/amalgamate.py dist
+      - name: Build an app from each form, and the optional parts on and off
+        run: |
+          W="-std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers"
+          sed 's#<cui/cui.h>#"cui.h"#; s#<cui/cui_app.h>#"cui.h"#' examples/hello.c > dist/hello.c
+          ${{ matrix.cc }} $W -Idist dist/hello.c dist/cui.c -lX11 -ldl -lm -lpthread -o dist/hello
+          printf '#define CUI_IMPLEMENTATION\n#include "cui_single.h"\n' > dist/impl.c
+          ${{ matrix.cc }} $W -Idist -c dist/impl.c -o dist/impl.o
+          ${{ matrix.cc }} $W -Idist -DCUI_NO_APP -DCUI_NO_DEFAULT_FONTS -DCUI_NO_STB_IMAGE -c dist/cui.c -o dist/core.o
+          ${{ matrix.cc }} $W -Idist -DCUI_TEXT_SHAPING -c dist/cui.c -o dist/shaping.o
+      - name: Build it after the macros a full windows.h defines
+        # a user's #include <windows.h> before cui_single.h turns words like `small` into macros (issue #17)
+        run: |
+          W="-std=c99 -O1 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers -include tests/windows_sdk_words.h"
+          ${{ matrix.cc }} $W -Idist -c dist/impl.c -o dist/impl-win.o
+          ${{ matrix.cc }} $W -Idist -DCUI_TEXT_SHAPING -c dist/cui.c -o dist/shaping-win.o
+
+  first-steps:
+    name: First steps, as the guide gives them
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q libx11-dev
+      # the code and commands of docs/getting-started.md: without CMake, one file, CMake, installed
+      - run: tests/first_steps.sh
+      # every complete program in docs/*.md (the recipes, the tutorial's first step) builds with warnings as errors
+      - run: tests/doc_programs.sh
+
+  windows:
+    name: Windows (${{ matrix.name }}, shaping ${{ matrix.shaping }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: MSVC, generator: "Visual Studio 17 2022", extra: "", shaping: OFF }
+          - { name: MSVC, generator: "Visual Studio 17 2022", extra: "", shaping: ON }
+          - { name: MinGW, generator: "MinGW Makefiles", extra: "-DCMAKE_C_COMPILER=gcc", shaping: OFF }
+          - { name: MinGW, generator: "MinGW Makefiles", extra: "-DCMAKE_C_COMPILER=gcc", shaping: ON }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -G "${{ matrix.generator }}" ${{ matrix.extra }} -DCMAKE_BUILD_TYPE=Release -DCUI_TEXT_SHAPING=${{ matrix.shaping }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: App smoke test
+        shell: bash
+        run: |
+          exe=$(find build -name cui_app_smoke.exe | head -1)
+          "$exe" build/smoke.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-${{ matrix.name }}-${{ matrix.shaping }}-screenshots
+          path: build/**/*.png
+          if-no-files-found: ignore
+
+  macos:
+    name: macOS (shaping ${{ matrix.shaping }})
+    strategy:
+      matrix:
+        shaping: [OFF, ON]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCUI_TEXT_SHAPING=${{ matrix.shaping }}
+      - name: Build
+        run: cmake --build build -j 4
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+      - name: App smoke test
+        run: ./build/tests/cui_app_smoke build/smoke.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-${{ matrix.shaping }}-screenshots
+          path: build/**/*.png
+          if-no-files-found: ignore

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing guide
+    url: https://github.com/yappologistic/CUI/blob/master/docs/CONTRIBUTING.md
+    about: What every report needs, for humans and AI agents. Read it before opening an issue.
+  - name: Live docs
+    url: https://yappologistic.github.io/CUI/
+    about: Every component running in your browser, to check behavior before reporting.
