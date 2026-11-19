@@ -7,7 +7,7 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cargo build --release --locked --manifest-path "$project_dir/Cargo.toml" --target-dir "$project_dir/target"
+cargo build --release --locked --workspace --manifest-path "$project_dir/Cargo.toml" --target-dir "$project_dir/target"
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$project_dir/Cargo.toml" | head -n 1)
 test -n "$version"
 app="$project_dir/target/macos/Media Shelf.app"

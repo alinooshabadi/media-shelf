@@ -85,11 +85,12 @@ pub fn icon(s: &[u8; 4]) -> *const c_char {
 // Panic-safe scope guards                                                     //
 // --------------------------------------------------------------------------- //
 
-struct ScopeEnd {
-    ui: Ui,
-    kind: ScopeKind,
+pub(crate) struct ScopeEnd {
+    pub(crate) ui: Ui,
+    pub(crate) kind: ScopeKind,
 }
-enum ScopeKind {
+pub(crate) enum ScopeKind {
+    None,
     Box,
     Card,
     Scroll,
@@ -105,6 +106,7 @@ impl Drop for ScopeEnd {
     fn drop(&mut self) {
         unsafe {
             match self.kind {
+                ScopeKind::None => {}
                 ScopeKind::Box => ffi::cui_box_end(self.ui),
                 ScopeKind::Card => ffi::cui_card_end(self.ui),
                 ScopeKind::Scroll => ffi::cui_scroll_end(self.ui),
@@ -282,6 +284,13 @@ pub fn scroll_to(ui: Ui, id: &str, y: f32) {
     unsafe { ffi::cui_scroll_to(ui, cstr(id), y) }
 }
 
+/// Begin a scroll region, returning a guard that ends it on drop. Use when the
+/// region must outlive the enclosing statement (e.g. a loop that draws into it).
+pub fn scroll_begin(ui: Ui, opts: &ffi::cui_scroll_opts) -> ScopeEnd {
+    unsafe { ffi::cui_scroll_begin(ui, opts) };
+    ScopeEnd { ui, kind: ScopeKind::Scroll }
+}
+
 pub fn card<F>(ui: Ui, opts: &ffi::cui_card_opts, build: F) -> bool
 where
     F: FnOnce(Ui),
@@ -292,17 +301,17 @@ where
     clicked
 }
 
-/// Resizable two-pane split. `ratio` is read and written in place.
-pub fn split<F1, F2>(ui: Ui, id: &str, ratio: &mut f32, opts: &ffi::cui_split_opts, first: F1, second: F2)
-where
-    F1: FnOnce(Ui),
-    F2: FnOnce(Ui),
-{
+/// Begin a resizable two-pane split. Returns a guard that ends the split
+/// scope on drop; call [`split_next`] between the two panes. `ratio` is read
+/// and written in place.
+pub fn split_begin(ui: Ui, id: &str, ratio: &mut f32, opts: &ffi::cui_split_opts) -> ScopeEnd {
     unsafe { ffi::cui_split_begin(ui, cstr(id), ratio, opts) };
-    let _g = ScopeEnd { ui, kind: ScopeKind::Split };
-    first(ui);
+    ScopeEnd { ui, kind: ScopeKind::Split }
+}
+
+/// Close pane one, draw the divider, and open pane two.
+pub fn split_next(ui: Ui) {
     unsafe { ffi::cui_split_next(ui) };
-    second(ui);
 }
 
 // --------------------------------------------------------------------------- //
@@ -369,15 +378,28 @@ pub fn toast_dismiss(ui: Ui, handle: i32) {
 ///
 /// `buf` must have room for `cap` bytes including the NUL terminator. CUI keeps
 /// the buffer NUL-terminated; read the text with [`input_as_str`].
+/// CUI calls `strlen(buf)` on every edit control, so a zero-length Rust buffer
+/// (whose `as_mut_ptr` is dangling) must be presented as a valid empty C
+/// string instead. A zero-length buffer can never hold a change, so falling
+/// back to a static `""` is lossless.
+fn edit_buf(buf: &mut [u8]) -> *mut c_char {
+    if buf.is_empty() {
+        static EMPTY: [u8; 1] = [0];
+        EMPTY.as_ptr().cast_mut().cast()
+    } else {
+        buf.as_mut_ptr().cast()
+    }
+}
+
 /// Returns CUI event flags: [`ffi::CUI_CHANGED`], [`ffi::CUI_SUBMITTED`].
 pub fn input(ui: Ui, id: &str, buf: &mut [u8], cap: usize, opts: &ffi::cui_input_opts) -> i32 {
-    unsafe { ffi::cui_input_ex(ui, cstr(id), buf.as_mut_ptr().cast(), cap as usize, opts) }
+    unsafe { ffi::cui_input_ex(ui, cstr(id), edit_buf(buf), cap as usize, opts) }
 }
 pub fn textarea(ui: Ui, id: &str, buf: &mut [u8], cap: usize, opts: &ffi::cui_input_opts) -> i32 {
-    unsafe { ffi::cui_textarea_ex(ui, cstr(id), buf.as_mut_ptr().cast(), cap as usize, opts) }
+    unsafe { ffi::cui_textarea_ex(ui, cstr(id), edit_buf(buf), cap as usize, opts) }
 }
 pub fn search(ui: Ui, id: &str, buf: &mut [u8], cap: usize, opts: &ffi::cui_input_opts) -> i32 {
-    unsafe { ffi::cui_search_ex(ui, cstr(id), buf.as_mut_ptr().cast(), cap as usize, opts) }
+    unsafe { ffi::cui_search_ex(ui, cstr(id), edit_buf(buf), cap as usize, opts) }
 }
 pub fn number(ui: Ui, id: &str, value: &mut f64, lo: f64, hi: f64, opts: &ffi::cui_number_opts) -> bool {
     unsafe { ffi::cui_number_ex(ui, cstr(id), value, lo, hi, opts) }
@@ -491,6 +513,26 @@ where
 /// `true` when the node from the last `cui_tree` call was clicked this frame.
 pub fn tree_clicked(ui: Ui) -> bool {
     unsafe { ffi::cui_tree_clicked(ui) }
+}
+
+/// Begin a tree node. Returns `(is_open, guard)`: `is_open` is true while the
+/// body should be drawn, and the guard ends the node scope on drop (a no-op
+/// when collapsed). `open` toggles on click. Capture [`tree_clicked`]
+/// immediately after this call — the next `tree_begin` overwrites it.
+pub fn tree_begin(ui: Ui, label: &str, open: &mut bool, opts: &ffi::cui_tree_opts) -> (bool, ScopeEnd) {
+    let expanded = unsafe { ffi::cui_tree_begin(ui, cstr(label), open, opts) };
+    let kind = if expanded { ScopeKind::Tree } else { ScopeKind::None };
+    (expanded, ScopeEnd { ui, kind })
+}
+
+/// End a tree node (pair with [`tree_begin`] when using it directly).
+pub fn tree_end(ui: Ui) {
+    unsafe { ffi::cui_tree_end(ui) }
+}
+
+/// Currently held modifier keys (`CUI_MOD_SHIFT`/`CTRL`/`ALT`/`SUPER`).
+pub fn key_mods(ui: Ui) -> i32 {
+    unsafe { ffi::cui_key_mods(ui) }
 }
 
 // --------------------------------------------------------------------------- //
