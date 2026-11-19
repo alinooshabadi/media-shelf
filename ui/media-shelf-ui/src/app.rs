@@ -556,6 +556,19 @@ fn detail_view(ui: crate::ui::Ui, app: &mut App) {
 
         u::heading(ui, &library::title(&video), 1);
 
+        // A season node was chosen in the library tree: show the season's
+        // episode table instead of the tabs.
+        if app.selected_season.is_some() {
+            u::separator(ui);
+            let mut scroll = unsafe { u::opts::<ffi::cui_scroll_opts>() };
+            scroll.width = u::fill();
+            scroll.height = u::fill();
+            scroll.id = u::cstr("season_scroll");
+            scroll.pad = 16.0;
+            u::scroll(ui, &scroll, |ui| season_table(ui, app));
+            return;
+        }
+
         let tabs = ["Overview", "Cast & crew", "Media files", "Artwork", "Trailer"];
         if u::tabs(ui, "detail_tabs", &tabs, &mut app.detail_tab, &tabs_opts()) {
             u::request_redraw(ui);
@@ -579,6 +592,180 @@ fn detail_view(ui: crate::ui::Ui, app: &mut App) {
             }
         });
     });
+}
+
+/// Episode table for the selected season (or "Specials" when season == 0).
+/// Local episodes are clickable; missing episodes render in a warning tone.
+fn season_table(ui: crate::ui::Ui, app: &mut App) {
+    use crate::ui as u;
+
+    let Some((folder, season)) = app.selected_season.clone() else {
+        return;
+    };
+
+    let season_label = if season == 0 {
+        "Specials".to_string()
+    } else {
+        format!("Season {season}")
+    };
+    let mut h = unsafe { u::opts::<ffi::cui_text_opts>() };
+    h.size = 15.0;
+    h.color = u::fg();
+    u::text(ui, &season_label, &h);
+    u::gap(ui, 4.0);
+
+    let show = match app.series_tree.shows.get(&folder) {
+        Some(s) => s,
+        None => {
+            u::spinner(ui, 14.0);
+            u::gap(ui, 6.0);
+            let mut t = unsafe { u::opts::<ffi::cui_text_opts>() };
+            t.color = u::text_muted();
+            u::text(ui, "Loading episodes…", &t);
+            return;
+        }
+    };
+
+    if show.checking_metadata {
+        u::spinner(ui, 12.0);
+        u::gap(ui, 6.0);
+        let mut t = unsafe { u::opts::<ffi::cui_text_opts>() };
+        t.color = u::text_muted();
+        u::text(ui, "Loading episode details…", &t);
+        u::gap(ui, 8.0);
+    }
+    if !show.warnings.is_empty() {
+        let mut t = unsafe { u::opts::<ffi::cui_text_opts>() };
+        t.color = u::warning();
+        u::text(ui, "Some episode details are unavailable.", &t);
+        u::gap(ui, 8.0);
+    }
+
+    // Merge local episodes + missing episodes, sorted by number.
+    let key: Option<u32> = Some(season);
+    let episodes = show.seasons.get(&key);
+    let missing = show.missing.get(&season);
+    let details = show.metadata.get(&season);
+
+    struct Row {
+        number: u32,
+        title: String,
+        aired: Option<String>,
+        rating: Option<f64>,
+        path: Option<PathBuf>,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    if let Some(eps) = episodes {
+        for e in eps {
+            let title = if e.details.title.is_empty() {
+                e.label.clone()
+            } else {
+                e.details.title.clone()
+            };
+            rows.push(Row {
+                number: e.number.unwrap_or(u32::MAX),
+                title,
+                aired: e.details.aired.clone(),
+                rating: e.details.rating,
+                path: Some(e.video.path.clone()),
+            });
+        }
+    }
+    if app.show_missing_episodes {
+        if let Some(m) = missing {
+            let empty: std::collections::BTreeMap<u32, media_shelf::metadata::EpisodeDetails> =
+                std::collections::BTreeMap::new();
+            let d = details.unwrap_or(&empty);
+            for (number, mtitle) in m {
+                let info = d.get(number);
+                rows.push(Row {
+                    number: *number,
+                    title: format!("{mtitle} · Missing"),
+                    aired: info.and_then(|e| e.aired.clone()),
+                    rating: info.and_then(|e| e.rating),
+                    path: None,
+                });
+            }
+        }
+    }
+    rows.sort_by_key(|r| r.number);
+
+    let mut t = unsafe { u::opts::<ffi::cui_text_opts>() };
+    t.color = u::secondary();
+    t.size = 12.0;
+    u::text(ui, &format!("Episodes ({})", rows.len()), &t);
+    u::gap(ui, 8.0);
+
+    if rows.is_empty() {
+        let mut t = unsafe { u::opts::<ffi::cui_text_opts>() };
+        t.color = u::text_muted();
+        u::text(ui, "No episodes in this season.", &t);
+        return;
+    }
+
+    let n = rows.len() as i32;
+    let mut sort = ffi::cui_table_sort {
+        column: 0,
+        descending: false,
+    };
+    let mut gopts = unsafe { u::opts::<ffi::cui_grid_opts>() };
+    gopts.width = u::fill();
+    gopts.height = u::fill();
+    gopts.row_height = 30.0;
+    gopts.striped = true;
+    // No checkbox column (single selection) and no persistent cursor; the row
+    // click flag is what drives selection below.
+    gopts.selected = std::ptr::null_mut();
+    gopts.sort = &mut sort;
+    gopts.hide_checkboxes = true;
+
+    let cols: [&str; 4] = ["Episode", "Title", "Aired", "Rating"];
+    let mut columns: Vec<ffi::cui_grid_column> = Vec::new();
+    for (i, label) in cols.iter().enumerate() {
+        let mut col: ffi::cui_grid_column = unsafe { u::opts() };
+        col.title = u::cstr(label);
+        col.sortable = false;
+        col.align = ffi::cui_text_align_CUI_TEXT_START;
+        col.width = match i {
+            0 => 64.0,
+            1 => 0.0,
+            2 => 100.0,
+            _ => 60.0,
+        };
+        if i == 1 {
+            col.priority = -1;
+        }
+        columns.push(col);
+    }
+
+    let mut first: i32 = 0;
+    let mut last: i32 = 0;
+    let mut clicked_path: Option<PathBuf> = None;
+    let grid_id = format!("season_{}_{}", folder.display(), season);
+    if u::data_grid_begin(ui, &grid_id, &columns, n, &mut first, &mut last, &gopts) {
+        for r in first..last {
+            let row = &rows[r as usize];
+            let clicked = u::data_grid_row(ui, r);
+            if clicked {
+                clicked_path = row.path.clone();
+            }
+            let num = if row.number == u32::MAX { "–" } else { &row.number.to_string() };
+            u::data_grid_cell_text(ui, num);
+            if row.path.is_none() {
+                u::data_grid_cell_text_colored(ui, &row.title, u::warning());
+            } else {
+                u::data_grid_cell_text(ui, &row.title);
+            }
+            u::data_grid_cell_text(ui, row.aired.as_deref().unwrap_or("–"));
+            u::data_grid_cell_text(ui, row.rating.map(|r| format!("{r:.1}")).as_deref().unwrap_or("–"));
+        }
+        u::data_grid_end(ui);
+    }
+
+    if let Some(path) = clicked_path {
+        app.select(path, false);
+        app.detail_tab = 2;
+    }
 }
 
 fn overview_tab(ui: crate::ui::Ui, _app: &mut App, _video: &Video, data: Option<&media_shelf::metadata::Metadata>) {

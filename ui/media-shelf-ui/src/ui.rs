@@ -286,7 +286,7 @@ pub fn scroll_to(ui: Ui, id: &str, y: f32) {
 
 /// Begin a scroll region, returning a guard that ends it on drop. Use when the
 /// region must outlive the enclosing statement (e.g. a loop that draws into it).
-pub fn scroll_begin(ui: Ui, opts: &ffi::cui_scroll_opts) -> ScopeEnd {
+pub(crate) fn scroll_begin(ui: Ui, opts: &ffi::cui_scroll_opts) -> ScopeEnd {
     unsafe { ffi::cui_scroll_begin(ui, opts) };
     ScopeEnd { ui, kind: ScopeKind::Scroll }
 }
@@ -304,7 +304,7 @@ where
 /// Begin a resizable two-pane split. Returns a guard that ends the split
 /// scope on drop; call [`split_next`] between the two panes. `ratio` is read
 /// and written in place.
-pub fn split_begin(ui: Ui, id: &str, ratio: &mut f32, opts: &ffi::cui_split_opts) -> ScopeEnd {
+pub(crate) fn split_begin(ui: Ui, id: &str, ratio: &mut f32, opts: &ffi::cui_split_opts) -> ScopeEnd {
     unsafe { ffi::cui_split_begin(ui, cstr(id), ratio, opts) };
     ScopeEnd { ui, kind: ScopeKind::Split }
 }
@@ -484,6 +484,15 @@ pub fn data_grid_cell(ui: Ui) {
 pub fn data_grid_cell_text(ui: Ui, text: &str) {
     unsafe { ffi::cui_data_grid_cell_text(ui, cstr(text)) }
 }
+/// Grid cell with an explicit text color (e.g. warning tone for missing rows).
+pub fn data_grid_cell_text_colored(ui: Ui, text: &str, color: ffi::cui_color) {
+    unsafe { ffi::cui_data_grid_cell(ui) };
+    let mut t = unsafe { core::mem::zeroed::<ffi::cui_text_opts>() };
+    t.nowrap = true;
+    t.line_height = 1.3;
+    t.color = color;
+    unsafe { ffi::cui_text_ex(ui, cstr(text), &t) }
+}
 pub fn data_grid_end(ui: Ui) {
     unsafe { ffi::cui_data_grid_end(ui) }
 }
@@ -519,7 +528,7 @@ pub fn tree_clicked(ui: Ui) -> bool {
 /// body should be drawn, and the guard ends the node scope on drop (a no-op
 /// when collapsed). `open` toggles on click. Capture [`tree_clicked`]
 /// immediately after this call — the next `tree_begin` overwrites it.
-pub fn tree_begin(ui: Ui, label: &str, open: &mut bool, opts: &ffi::cui_tree_opts) -> (bool, ScopeEnd) {
+pub(crate) fn tree_begin(ui: Ui, label: &str, open: &mut bool, opts: &ffi::cui_tree_opts) -> (bool, ScopeEnd) {
     let expanded = unsafe { ffi::cui_tree_begin(ui, cstr(label), open, opts) };
     let kind = if expanded { ScopeKind::Tree } else { ScopeKind::None };
     (expanded, ScopeEnd { ui, kind })
