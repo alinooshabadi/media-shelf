@@ -4,7 +4,7 @@
 //! pointer, so no `Box<dyn>` / `Rc` inside the tree) reads the state through
 //! `&mut *user`, draws one CUI frame, and processes background results.
 
-use crate::{ffi, library, series};
+use crate::{ffi, library, matching, series};
 use media_shelf::storage::{LibraryDb, database_path};
 use media_shelf::{Category, ScanReport, Source, Video};
 use std::{
@@ -65,6 +65,8 @@ pub struct App {
     pub toast_msg: Option<String>,
     /// Context-menu action chosen this frame, consumed by the series tree.
     pub pending_show_action: Option<crate::library::ShowAction>,
+    /// TMDB matching / scraping state (search dialog, settings, report).
+    pub tmdb_ui: matching::TmdbUi,
 }
 
 impl App {
@@ -146,6 +148,7 @@ impl App {
             season_open: Default::default(),
             toast_msg: None,
             pending_show_action: None,
+            tmdb_ui: matching::TmdbUi::new(),
             sort: library::SortColumn::Title,
             sort_descending: false,
             theme_dark: std::env::var("MEDIA_SHELF_THEME").ok().and_then(|v| match v.as_str() {
@@ -279,7 +282,7 @@ impl App {
     }
 
     pub fn items_locked(&self) -> bool {
-        self.receiver.is_some()
+        self.receiver.is_some() || self.tmdb_ui.active()
     }
 
     /// Select one item. `additive` (Ctrl/Cmd-click) toggles it inside the
@@ -326,7 +329,53 @@ impl App {
 
     /// TMDB catalog lookup for a matched show: (show id, token, language).
     pub fn episode_lookup(&self, show: &Video) -> Option<(i64, String, String)> {
-        show.tmdb.as_ref().map(|m| (m.id, String::new(), "en".to_string()))
+        show.tmdb
+            .as_ref()
+            .map(|m| (m.id, self.tmdb_ui.token.clone(), self.tmdb_ui.language.clone()))
+    }
+
+    /// The videos the scrape actions apply to.
+    ///
+    /// `unscraped = true` selects every same-category item without metadata
+    /// yet; otherwise the current (multi-)selection, including the selected
+    /// season and selected show folders. Duplicate episodes in one show are
+    /// collapsed to the show folder.
+    pub fn selected_videos(&self, unscraped: bool) -> Vec<Video> {
+        let mut groups = HashSet::new();
+        self.videos
+            .iter()
+            .filter(|v| {
+                v.category == self.category
+                    && (if unscraped {
+                        v.metadata.is_none()
+                    } else {
+                        self.library_item_selected(v)
+                    })
+            })
+            .filter(|v| {
+                let key =
+                    media_shelf::metadata::series_folder(v, &self.sources).unwrap_or_else(|| v.path.clone());
+                groups.insert(key)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the current selection covers `video` (show-level actions include
+    /// descendants without adding episodes to the saved index).
+    fn library_item_selected(&self, video: &Video) -> bool {
+        (video.category == Category::Series
+            && self.selected_season.as_ref().is_some_and(|(folder, _)| {
+                media_shelf::metadata::series_folder(video, &self.sources).as_ref() == Some(folder)
+            }))
+            || self.selection.contains(&video.path)
+            || self.selected.as_ref() == Some(&video.path)
+            || (video.is_folder
+                && self
+                    .selection
+                    .iter()
+                    .chain(self.selected.iter())
+                    .any(|p| p != &video.path && p.starts_with(&video.path)))
     }
 
     /// Drop a loaded show and request it again (Refresh episodes).
@@ -469,6 +518,8 @@ fn render(ui: crate::ui::Ui, app: &mut App) {
 
     sources_dialog(ui, app, locked);
     settings_dialog(ui, app);
+    // TMDB matching dialogs (search, settings, report) — topmost.
+    matching::render(ui, app);
 
     // Flash scan errors as toasts.
     if let Some(error) = app.error.clone() {
@@ -489,6 +540,10 @@ fn render(ui: crate::ui::Ui, app: &mut App) {
 
 fn toolbar(ui: crate::ui::Ui, app: &mut App, locked: bool) {
     use crate::ui as u;
+
+    // What the scrape actions would apply to (also drives button enablement).
+    let targets = app.selected_videos(false);
+    let known: Vec<Video> = targets.iter().filter(|v| v.tmdb.is_some()).cloned().collect();
 
     let mut bar = unsafe { u::opts::<ffi::cui_box>() };
     bar.dir = ffi::cui_dir_CUI_ROW;
@@ -516,13 +571,25 @@ fn toolbar(ui: crate::ui::Ui, app: &mut App, locked: bool) {
         if u::button(
             ui,
             "Search & scrape",
-            &opts_button(ffi::cui_button_variant_CUI_BUTTON_PRIMARY, locked || app.selected.is_none()),
-        ) && !locked && app.selected.is_some() {
-            app.toast_msg = Some("TMDB matching is on the way — this opens the scrape dialog.".into());
+            &opts_button(ffi::cui_button_variant_CUI_BUTTON_PRIMARY, locked || targets.is_empty()),
+        ) && !locked && !targets.is_empty() {
+            app.tmdb_ui.open_many(targets.clone(), false);
         }
         u::menu(ui, "More", &menu_opts_default(), |ui| {
-            if u::menu_item(ui, "Search & scrape selected", &menu_item_opts(false, app.selected.is_none())) {
-                app.toast_msg = Some("TMDB matching is on the way — this opens the scrape dialog.".into());
+            if u::menu_item(ui, "Search & scrape selected", &menu_item_opts(false, locked || targets.is_empty()))
+                && !locked
+            {
+                app.tmdb_ui.open_many(targets.clone(), false);
+            }
+            if u::menu_item(ui, "Re-scrape using saved IDs", &menu_item_opts(false, locked || known.is_empty()))
+                && !locked
+            {
+                app.tmdb_ui.open_many(known.clone(), true);
+            }
+            if u::menu_item(ui, "Search & scrape unscraped items", &menu_item_opts(false, locked))
+                && !locked
+            {
+                app.tmdb_ui.open_many(app.selected_videos(true), false);
             }
             u::menu_separator(ui);
             if u::menu_item(ui, "Data sources…", &menu_item_opts(false, false)) {

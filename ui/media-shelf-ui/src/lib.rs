@@ -19,6 +19,7 @@ pub mod ui;
 
 pub mod app;
 pub mod library;
+pub mod matching;
 pub mod series;
 
 pub use ui::*;

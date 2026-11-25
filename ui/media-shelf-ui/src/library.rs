@@ -626,9 +626,20 @@ pub enum ShowAction {
 
 fn apply_show_action(app: &mut App, folder: &Path, action: ShowAction) {
     match action {
-        ShowAction::Scrape => app.toast_msg = Some(
-            "TMDB matching is on the way — this opens the scrape dialog.".into(),
-        ),
+        // Queue the show's library items (all episodes collapse to the folder)
+        // into TMDB matching; the dialog will preview and scrape the whole show.
+        ShowAction::Scrape => {
+            let targets: Vec<Video> = app
+                .videos
+                .iter()
+                .filter(|v| {
+                    v.category == Category::Series
+                        && media_shelf::metadata::series_folder(v, &app.sources).as_ref() == Some(folder)
+                })
+                .cloned()
+                .collect();
+            app.tmdb_ui.open_many(targets, false);
+        }
         ShowAction::ReloadLocal => app.reload_show(folder),
         ShowAction::Rename => app.toast_msg = Some("Rename & cleanup is on the way.".into()),
     }
@@ -739,6 +750,7 @@ mod tests {
             pending_show_action: None,
             settings_open: false,
             show_missing_episodes: false,
+            tmdb_ui: Default::default(),
         }
     }
 
